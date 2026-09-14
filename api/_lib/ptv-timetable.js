@@ -931,9 +931,18 @@ function collectTrainMarkerDestinations(mode, destinations) {
     const last = rows.at(-1);
     const originStop = mode.stops.get(first.stopId)?.name;
     const finalStop = mode.stops.get(last.stopId)?.name;
+    const baseDestination = (trip.destination || finalStop || "").replace(/\s+Station$/i, "");
+    // Label a train "via City Loop" only when its own GTFS stop sequence
+    // calls at a loop station before terminating -- a trip that terminates
+    // at a loop station itself isn't travelling "via" the loop.
+    const usesCityLoop = !/city loop/i.test(baseDestination) && rows.slice(0, -1).some((row) =>
+      /^(parliament|melbourne central|flagstaff)$/i.test(
+        (mode.stops.get(row.stopId)?.name || "").replace(/\s+Station$/i, ""),
+      ),
+    );
     destinations.set(id, {
       origin: (originStop || "").replace(/\s+Station$/i, ""),
-      destination: (trip.destination || finalStop || "").replace(/\s+Station$/i, ""),
+      destination: usesCityLoop ? `${baseDestination} via City Loop` : baseDestination,
     });
     if (!trip.blockId) continue;
     const key = trip.blockId;
