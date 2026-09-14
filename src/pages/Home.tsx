@@ -925,6 +925,7 @@ const PLANNER_LINES = [
   { name: "Alamein", stations: LINES.alamein },
   { name: "Werribee", stations: LINES.werribee },
   { name: "Williamstown", stations: LINES.williamstown },
+  { name: "Altona Loop", stations: LINES.altonaLoop },
 ] as const;
 
 const JOURNEY_DISRUPTION_TERMS = ["Delays", "Track work", "Service changes", "Incidents"] as const;
