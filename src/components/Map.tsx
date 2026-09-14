@@ -18474,10 +18474,10 @@ export function Map({
                   {selectedVehicleOriginLabel}
                 </p>
               </div>
-              <div className="mt-6 flex items-center gap-2 text-emerald-300/80">
-                <div className="h-px w-5 bg-emerald-400/30" />
+              <div className="mt-6 flex items-center gap-2" style={{ color: `${selectedVehicleAccent}cc` }}>
+                <div className="h-px w-5" style={{ backgroundColor: `${selectedVehicleAccent}4d` }} />
                 <ArrowRight className="h-4 w-4" />
-                <div className="h-px w-5 bg-emerald-400/30" />
+                <div className="h-px w-5" style={{ backgroundColor: `${selectedVehicleAccent}4d` }} />
               </div>
               <div className="min-w-0 text-right">
                 <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/40">
@@ -18492,11 +18492,19 @@ export function Map({
             <div className="mt-3 flex flex-wrap gap-2">
               <span
                 className="rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide"
-                style={{
-                  border: `1px solid ${selectedVehicleIsRegional ? "rgba(196,181,253,0.30)" : "rgba(52,211,153,0.20)"}`,
-                  background: selectedVehicleIsRegional ? "rgba(124,58,237,0.18)" : "rgba(16,185,129,0.10)",
-                  color: selectedVehicleIsRegional ? "#ede9fe" : "#d1fae5",
-                }}
+                style={
+                  selectedVehicleIsRegional
+                    ? {
+                        border: "1px solid rgba(196,181,253,0.30)",
+                        background: "rgba(124,58,237,0.18)",
+                        color: "#ede9fe",
+                      }
+                    : {
+                        border: `1px solid ${selectedVehicleAccent}33`,
+                        background: `${selectedVehicleAccent}1a`,
+                        color: selectedVehicleAccent,
+                      }
+                }
               >
                 {selectedVehicleSnapshot?.position?.vehicle_stop_status === "STOPPED_AT"
                   ? `Stopped at ${selectedVehicleSnapshot.position.current_stop}`
