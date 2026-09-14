@@ -930,6 +930,23 @@ const PLANNER_LINES = [
 
 const JOURNEY_DISRUPTION_TERMS = ["Delays", "Track work", "Service changes", "Incidents"] as const;
 
+// Victoria unified Zone 1 and Zone 2 myki pricing in January 2023, so almost
+// all metropolitan train/tram/bus travel uses one fare regardless of how many
+// zones a trip crosses. Fares are reviewed and typically increase every
+// January, so these figures are indicative only, not fetched live.
+// Confirm current pricing at https://www.ptv.vic.gov.au/tickets/myki/myki-money-and-myki-pass/.
+const MYKI_METRO_FARE_ESTIMATE = {
+  full: { twoHour: 5.3, daily: 10.6 },
+  concession: { twoHour: 2.65, daily: 5.3 },
+};
+
+function estimateMykiFare(route: Station[], legs: JourneyLeg[]) {
+  if (route.length < 2) return null;
+  const hasPaidLeg = legs.some((leg) => leg.mode === "train" || leg.mode === "tram" || leg.mode === "bus");
+  if (!hasPaidLeg) return null;
+  return MYKI_METRO_FARE_ESTIMATE;
+}
+
 function getJourneyCorridorLabels(route: Station[]) {
   const routeNames = new Set(route.map((station) => station.name));
   return PLANNER_LINES
@@ -2493,6 +2510,10 @@ export default function Home() {
       matchingAlerts,
     };
   }, [journeyRoute, journeyDisplay, metroJourneyAlerts, journeyAlertsError, journeyAlertsUpdatedAt]);
+  const journeyFareEstimate = useMemo(
+    () => estimateMykiFare(journeyRoute, journeyDisplay?.legs ?? []),
+    [journeyRoute, journeyDisplay],
+  );
   const openLiveTrainOnMap = useCallback((trip: FleetTrip) => {
     setFocusedVehicleKey(trip.focusKey);
     setActiveTab("map");
@@ -3889,6 +3910,39 @@ export default function Home() {
                         Best boarding position
                       </p>
                       <p className="mt-1 text-sm text-emerald-50/95">{journeyBoardingAdvice}</p>
+                    </div>
+                  )}
+
+                  {journeyFareEstimate && journeyRoute.length > 1 && (
+                    <div className="mt-3 rounded-2xl border border-sky-400/20 bg-sky-500/10 px-3 py-2.5">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-200/85">
+                          Myki fare estimate
+                        </p>
+                        <a
+                          href="https://www.ptv.vic.gov.au/tickets/myki/myki-money-and-myki-pass/"
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-[11px] font-semibold text-sky-200/85 underline underline-offset-2"
+                        >
+                          Read more
+                        </a>
+                      </div>
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        <div className="rounded-xl bg-black/20 px-3 py-2">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-white/45">Full fare</p>
+                          <p className="mt-0.5 text-sm font-semibold text-white">${journeyFareEstimate.full.twoHour.toFixed(2)} <span className="text-white/45 font-normal">/ 2hr</span></p>
+                          <p className="text-xs text-white/55">${journeyFareEstimate.full.daily.toFixed(2)} daily cap</p>
+                        </div>
+                        <div className="rounded-xl bg-black/20 px-3 py-2">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-white/45">Concession</p>
+                          <p className="mt-0.5 text-sm font-semibold text-white">${journeyFareEstimate.concession.twoHour.toFixed(2)} <span className="text-white/45 font-normal">/ 2hr</span></p>
+                          <p className="text-xs text-white/55">${journeyFareEstimate.concession.daily.toFixed(2)} daily cap</p>
+                        </div>
+                      </div>
+                      <p className="mt-2 text-[10px] leading-4 text-white/40">
+                        *Fare estimate only, based on standard metropolitan myki pricing. V/Line regional trips use separate distance-based fares — confirm exact pricing at ptv.vic.gov.au.
+                      </p>
                     </div>
                   )}
 
