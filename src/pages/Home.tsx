@@ -2778,8 +2778,12 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (activeTab === "map") return;
-    setIsUtilityPanelOpen(true);
+    // Non-map tabs force the docked sheet open regardless of this flag (see
+    // the isOpen ternary below), but the flag itself must reset to false
+    // when returning to the map tab. Otherwise it's left "open" from the
+    // last non-map tab, so the sheet renders fully expanded over the map
+    // instead of collapsed to its peek strip.
+    setIsUtilityPanelOpen(activeTab !== "map");
   }, [activeTab]);
 
   const findNearestStation = useCallback(
