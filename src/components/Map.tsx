@@ -1084,6 +1084,7 @@ function createLiveTrainIcon(
     dimmed?: boolean;
     hideSecondaryLabel?: boolean;
     routeStops?: Station[];
+    viaCityLoop?: boolean;
   },
 ) {
   const markerLine = /HCMT/i.test(getVehicleDisplayType(vehicle)) ? "Metro Tunnel" : vehicle.line;
@@ -1133,7 +1134,7 @@ function createLiveTrainIcon(
   const finalDestinationLabel = destinationLabel.split("→").at(-1)?.trim() || destinationLabel;
   const markerViaLabel = /HCMT/i.test(getVehicleDisplayType(vehicle))
     ? "Metro Tunnel"
-    : /City Loop/i.test(destinationLabel)
+    : options?.viaCityLoop || /City Loop/i.test(destinationLabel)
       ? "City Loop"
       : destinationLabel.includes("→")
         // Kept full ("Flinders Street") — see originLabelFull above.
@@ -17602,6 +17603,7 @@ export function Map({
                   dimmed: isZoomedOut && priority !== "high" && !isSelected && !isHovered,
                   hideSecondaryLabel,
                   routeStops: isSelected && selectedTrainTrip?.tripId === vehicle.tripId ? selectedVerifiedHeadingStops : undefined,
+                  viaCityLoop: isSelected && selectedTrainTrip?.tripId === vehicle.tripId && selectedTrainUsesCityLoop,
                 })}
                 zIndexOffset={isSelected ? 4600 : isHovered ? 4200 : hideSecondaryLabel ? 3600 : 3900}
                 riseOnHover
