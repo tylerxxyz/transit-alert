@@ -17,7 +17,7 @@ export type MetroNotifyAlert = {
   url?: string;
   addToCalendarUrl?: string;
   tdn?: string;
-  mode?: "bus" | "tram" | "vline";
+  mode?: "bus" | "tram" | "vline" | "xpt";
   corridors?: string[];
   source: "metro";
 };
@@ -138,7 +138,7 @@ function normaliseMetroAlert(raw: Partial<MetroNotifyAlert> & Record<string, unk
     url: typeof raw.url === "string" ? raw.url : undefined,
     addToCalendarUrl: typeof raw.addToCalendarUrl === "string" ? raw.addToCalendarUrl : undefined,
     tdn: typeof raw.tdn === "string" && raw.tdn.trim() ? raw.tdn.trim() : undefined,
-    mode: raw.mode === "bus" || raw.mode === "tram" || raw.mode === "vline" ? raw.mode : undefined,
+    mode: raw.mode === "bus" || raw.mode === "tram" || raw.mode === "vline" || raw.mode === "xpt" ? raw.mode : undefined,
     corridors: Array.isArray(raw.corridors)
       ? raw.corridors.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
       : undefined,
@@ -548,10 +548,6 @@ export function isHeadlineAlert(alert: MetroNotifyAlert) {
 
 export async function fetchMetroNotifyAlerts(): Promise<MetroNotifyAlert[]> {
   const response = await fetch(getApiUrl("/api/metro-notify/alerts"));
-
-  if (response.status === 404) {
-    return [];
-  }
 
   if (!response.ok) {
     let message = `Failed to load Metro alerts (${response.status})`;

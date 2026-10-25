@@ -1,4 +1,4 @@
-import { loadTimetable, readIndexedBusStopTimes, normaliseStationName } from "./ptv-timetable.js";
+import { loadTimetable, readIndexedBusStopTimes, readIndexedBusShape, normaliseStationName } from "./ptv-timetable.js";
 
 // Real, structural multi-modal journey planning over the official GTFS
 // schedule (train + V/Line + tram + bus). Every route, stop, and headsign
@@ -142,7 +142,7 @@ function bestBusPatterns(mode) {
   return byRouteDirection;
 }
 
-function addStopSequenceEdges(nodes, adjacency, modeKey, displayMode, mode, stopTimes, routeKey, routeLabel, fallbackHeadsign) {
+function addStopSequenceEdges(nodes, adjacency, modeKey, displayMode, mode, stopTimes, routeKey, routeLabel, fallbackHeadsign, shapeId) {
   for (let index = 0; index < stopTimes.length - 1; index += 1) {
     const current = stopTimes[index];
     const next = stopTimes[index + 1];
@@ -172,6 +172,7 @@ function addStopSequenceEdges(nodes, adjacency, modeKey, displayMode, mode, stop
       routeLabel,
       headsign: next.stopHeadsign || fallbackHeadsign || nextStop.name,
       seconds,
+      shapeId,
     });
   }
 }
@@ -188,7 +189,7 @@ function addPatternEdges(nodes, adjacency, modeKey, displayMode, mode, patterns,
     const routeLabel = String(route?.shortName || route?.longName || trip.routeId || displayMode).trim();
     addStopSequenceEdges(
       nodes, adjacency, modeKey, displayMode, mode, stopTimes,
-      `${modeKey}:${trip.routeId}:${trip.directionId}`, routeLabel, trip.destination,
+      `${modeKey}:${trip.routeId}:${trip.directionId}`, routeLabel, trip.destination, trip.shapeId,
     );
 
     const lastStop = stopTimes.at(-1);
@@ -492,6 +493,11 @@ function buildLegsFromEdges(graph, originNodeId, edges) {
       stopsCount: segmentStops,
       approxSeconds: segmentSeconds,
       distanceMetres: activeEdge.mode === "walk" ? activeEdge.distanceMetres : undefined,
+      fromLat: fromNode.lat,
+      fromLng: fromNode.lng,
+      toLat: toNode.lat,
+      toLng: toNode.lng,
+      shapeId: activeEdge.shapeId,
     });
   };
 
@@ -516,6 +522,54 @@ function buildLegsFromEdges(graph, originNodeId, edges) {
   return { stops, legs };
 }
 
+// A route's full real shape covers its whole terminus-to-terminus path;
+// most legs only ride part of it. Find the shape points nearest the leg's
+// actual boarding and alighting stops and slice between them, so the drawn
+// line matches the real road for exactly the portion of the route ridden —
+// not the model's stop-to-stop straight lines this replaces, and not the
+// bus's whole route either.
+function trimShapeToLeg(shapePoints, fromLat, fromLng, toLat, toLng) {
+  if (shapePoints.length < 2) return [];
+  const distanceSquared = (point, lat, lng) => (point[0] - lat) ** 2 + (point[1] - lng) ** 2;
+  let fromIndex = 0;
+  let fromBest = Infinity;
+  let toIndex = shapePoints.length - 1;
+  let toBest = Infinity;
+  for (let index = 0; index < shapePoints.length; index += 1) {
+    const point = shapePoints[index];
+    const fromDistance = distanceSquared(point, fromLat, fromLng);
+    if (fromDistance < fromBest) {
+      fromBest = fromDistance;
+      fromIndex = index;
+    }
+    const toDistance = distanceSquared(point, toLat, toLng);
+    if (toDistance < toBest) {
+      toBest = toDistance;
+      toIndex = index;
+    }
+  }
+  if (fromIndex === toIndex) return [];
+  return fromIndex < toIndex
+    ? shapePoints.slice(fromIndex, toIndex + 1)
+    : [...shapePoints.slice(toIndex, fromIndex + 1)].reverse();
+}
+
+// Real GTFS shapes only exist for bus routes in this app right now (see
+// readIndexedBusShape) — train/tram legs still draw as stop-to-stop lines on
+// the frontend, unaffected by this. Attaching real geometry here, once, at
+// the point a plan is built, means every leg's shape is ready to draw
+// exactly as-is rather than needing a second lookup client-side.
+function attachRealBusShapes(legs) {
+  for (const leg of legs) {
+    if (leg.mode !== "bus" || !leg.shapeId) continue;
+    if (![leg.fromLat, leg.fromLng, leg.toLat, leg.toLng].every(Number.isFinite)) continue;
+    const shapePoints = readIndexedBusShape(leg.shapeId);
+    const trimmed = trimShapeToLeg(shapePoints, leg.fromLat, leg.fromLng, leg.toLat, leg.toLng);
+    if (trimmed.length >= 2) leg.shapePositions = trimmed;
+  }
+  return legs;
+}
+
 export async function planJourney({ originName, originLat, originLng, destinationName, destinationLat, destinationLng }) {
   const graph = await getGraph();
   const sources = resolvePlace(graph, { name: originName, lat: originLat, lng: originLng });
@@ -534,8 +588,14 @@ export async function planJourney({ originName, originLat, originLng, destinatio
   if (!result) return { found: false, reason: "no-route" };
 
   const usedSource = sources.find((source) => source.nodeId === result.originNodeId) ?? sources[0];
-  const { stops, legs } = buildLegsFromEdges(graph, result.originNodeId, result.edges);
+  const { stops, legs: rawLegs } = buildLegsFromEdges(graph, result.originNodeId, result.edges);
   const walkFromOriginSeconds = usedSource.walkSeconds || 0;
+
+  // fromLat/fromLng/toLat/toLng/shapeId only exist to compute shapePositions
+  // above — internal plumbing, not part of the public leg shape callers rely on.
+  const legs = attachRealBusShapes(rawLegs).map(
+    ({ fromLat: _fromLat, fromLng: _fromLng, toLat: _toLat, toLng: _toLng, shapeId: _shapeId, ...leg }) => leg,
+  );
 
   return {
     found: true,

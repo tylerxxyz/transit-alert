@@ -8,10 +8,13 @@ import { fileURLToPath } from "node:url";
 import adminHandler from "../api/admin/[resource].js";
 import authHandler from "../api/auth/[action].js";
 import consistHandler from "../api/consist/[consist].js";
+import fleetTypeHandler from "../api/fleet-type/[fleetType].js";
 import metroNotifyAlertsHandler from "../api/metro-notify/alerts.js";
 import preferencesHandler from "../api/preferences/[[...slug]].js";
 import pushHandler from "../api/push/[action].js";
 import { checkAndPushNewAlerts, isPushConfigured } from "../api/_lib/push.js";
+import { recordFleetSightings } from "../api/_lib/fleet-tracking.js";
+import { ensureLiveTrainsFresh } from "../api/ptv/live-trains.js";
 import liveBusesHandler from "../api/ptv/live-buses.js";
 import sydneyTransitHandler from "../api/ptv/sydney-transit.js";
 import liveTrainsHandler from "../api/ptv/live-trains.js";
@@ -185,6 +188,8 @@ function getApiResolution(urlObject) {
       return { handler: adminHandler, query: { ...query, resource: remainder[0] || "" } };
     case "consist":
       return { handler: consistHandler, query: { ...query, consist: remainder[0] || "" } };
+    case "fleet-type":
+      return { handler: fleetTypeHandler, query: { ...query, fleetType: remainder[0] || "" } };
     case "metro-notify":
       return remainder[0] === "alerts" ? { handler: metroNotifyAlertsHandler, query } : null;
     case "ptv":
@@ -354,6 +359,57 @@ async function start() {
   } else {
     console.warn("[transitalert-push] VAPID keys not configured — push notifications disabled");
   }
+
+  if (isDatabaseConfigured) {
+    console.log("[fleet-tracking] Database configured, starting fleet sighting log");
+    const runFleetRecording = () => {
+      ensureLiveTrainsFresh()
+        .then((trains) => recordFleetSightings(trains))
+        .catch((error) => {
+          console.error("[fleet-tracking] Recording failed", error?.message ?? error);
+        });
+    };
+    runFleetRecording();
+    setInterval(runFleetRecording, 60_000);
+  }
 }
+
+// pglite (the embedded WASM Postgres this dev server runs against) has no
+// separate server process to survive a hard kill — a forcibly terminated
+// Node process gives it zero chance to flush its WAL/checkpoint, and enough
+// of those in a row genuinely corrupts the data directory beyond repair
+// (confirmed the hard way: even Postgres's own pg_resetwal couldn't recover
+// it once that happened). Closing it here on a normal stop signal lets it
+// shut down clean instead. Stopping this process for a redeploy should use
+// a signal Node can actually catch (e.g. `taskkill /PID <pid>` without
+// `/F`, not Stop-Process -Force) or this handler never runs at all.
+let shuttingDown = false;
+async function shutdownGracefully(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[shutdown] Received ${signal}, closing cleanly...`);
+  // pglite.close() hanging indefinitely (observed live: process stayed
+  // alive for 14+ hours after logging this line, never exiting) left a
+  // zombie process holding no port open — the watchdog saw the PID still
+  // alive and never started a replacement, so the site stayed down until
+  // someone noticed and force-killed it by hand. A shutdown signal must
+  // always result in the process actually exiting within a bounded time,
+  // whatever pglite is doing.
+  const forceExitTimer = setTimeout(() => {
+    console.error("[shutdown] Graceful close timed out after 5s, forcing exit");
+    process.exit(1);
+  }, 5000);
+  server.close();
+  try {
+    await pglite?.close();
+  } catch (error) {
+    console.error("[shutdown] Error closing database", error?.message ?? error);
+  }
+  clearTimeout(forceExitTimer);
+  process.exit(0);
+}
+process.on("SIGINT", () => void shutdownGracefully("SIGINT"));
+process.on("SIGTERM", () => void shutdownGracefully("SIGTERM"));
+process.on("SIGHUP", () => void shutdownGracefully("SIGHUP"));
 
 void start();

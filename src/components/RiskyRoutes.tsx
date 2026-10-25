@@ -3,9 +3,15 @@ import { Flame, AlertTriangle, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function RiskyRoutes() {
-  const { data: stats, isLoading } = useGetReportStats({
-    query: { refetchInterval: 60000 }
+  const { data: stats, isLoading, isError } = useGetReportStats({
+    query: { queryKey: ["/api/reports/stats"], refetchInterval: 60000 }
   });
+
+  if (isError) return (
+    <div role="status" className="absolute left-4 top-32 z-30 hidden max-w-64 rounded-2xl border border-white/10 bg-card/90 p-4 text-sm text-white/70 md:block">
+      Community report activity is unavailable. Please try again later.
+    </div>
+  );
 
   if (isLoading || !stats?.riskyRoutes?.length) return null;
 

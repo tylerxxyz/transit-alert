@@ -191,7 +191,12 @@ function normaliseLiveTrain(raw: Partial<LiveTrain> & Record<string, unknown>, i
         ? raw.direction
         : "down",
     heading: typeof raw.heading === "number" ? raw.heading : undefined,
-    trainType: typeof raw.trainType === "string" && raw.trainType.trim() ? raw.trainType : "Metro Train",
+    trainType:
+      typeof raw.trainType === "string" && raw.trainType.trim()
+        ? raw.trainType
+        : inferredLine === "V/Line" || /^01-/.test(typeof raw.tripId === "string" ? raw.tripId : "") || /-STY--/i.test(typeof raw.tripId === "string" ? raw.tripId : "")
+          ? "V/Line Train"
+          : "Metro Train",
     consist: normaliseConsistLabel(raw.consist),
     serviceDate: raw.serviceDate,
     vehicleId: raw.vehicleId,

@@ -16,6 +16,22 @@ const DEFAULT_GTFS_PATH = path.join(REPO_ROOT, ".local-host", "gtfs.zip");
 // destination is to look up its trip_id against the static trips.txt.
 let busHeadsignIndexPromise;
 
+// The realtime feed's trip_id carries a different service-pattern segment
+// than the matching static-schedule trip — the same real class of mismatch
+// already found and fixed for trams, but a different segment for buses.
+// Confirmed live: real vehicle trip_id "32-923--1-MF42-923023" (route 923,
+// Kinetic Melbourne) has no exact match in trips.txt, but the static
+// schedule DOES have "32-923--1-MF21-923023" — same route, same direction,
+// same real trailing sequence number (923023), only the "MF.." service-code
+// segment (index 4) differs (real trip_headsign for that static row: "St
+// Kilda Station", matching the vehicle's own real stopping pattern). Drop
+// that one segment from both sides before comparing so they agree.
+function normaliseScheduleTripKey(tripId) {
+  const parts = String(tripId ?? "").split("-");
+  if (parts.length < 6) return tripId;
+  return [...parts.slice(0, 4), ...parts.slice(5)].join("-");
+}
+
 function parseCsvLine(line) {
   const values = [];
   let value = "";
@@ -66,7 +82,7 @@ async function loadBusHeadsignIndex() {
         if (!rawLine) continue;
         const values = parseCsvLine(rawLine);
         const headsign = values[headsignIndex]?.trim();
-        if (headsign) index.set(values[tripIdIndex], headsign);
+        if (headsign) index.set(normaliseScheduleTripKey(values[tripIdIndex]), headsign);
       }
       return index;
     }).catch((error) => {
@@ -204,7 +220,7 @@ function buildPtvLiveBuses(feed, headsignIndex) {
       const registration = vehicle.vehicle?.id;
       const label = normaliseLabel(registration, route);
       const destination = normaliseDestination(
-        headsignIndex?.get(vehicle.trip?.tripId),
+        headsignIndex?.get(normaliseScheduleTripKey(vehicle.trip?.tripId)),
         vehicle.trip?.tripHeadsign,
         vehicle.trip?.headsign,
         vehicle.trip?.tripShortName,

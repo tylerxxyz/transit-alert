@@ -109,10 +109,39 @@ export async function ensureDatabaseReady() {
         );
       `,
         `
+        ALTER TABLE push_subscriptions
+        ADD COLUMN IF NOT EXISTS notification_categories jsonb;
+      `,
+        `
+        ALTER TABLE push_subscriptions
+        ADD COLUMN IF NOT EXISTS notification_lines jsonb;
+      `,
+        `
         CREATE TABLE IF NOT EXISTS sent_push_alerts (
           alert_id text PRIMARY KEY,
           sent_at timestamp NOT NULL DEFAULT now()
         );
+      `,
+        `
+        CREATE TABLE IF NOT EXISTS fleet_sightings (
+          id serial PRIMARY KEY,
+          consist text NOT NULL,
+          tdn text,
+          trip_id text NOT NULL,
+          line text,
+          destination text,
+          train_type text,
+          lat double precision,
+          lng double precision,
+          status text,
+          service_date text,
+          first_seen_at timestamp NOT NULL DEFAULT now(),
+          last_seen_at timestamp NOT NULL DEFAULT now(),
+          CONSTRAINT fleet_sightings_consist_trip_unique UNIQUE (consist, trip_id)
+        );
+      `,
+        `
+        CREATE INDEX IF NOT EXISTS fleet_sightings_consist_idx ON fleet_sightings (consist);
       `,
       ];
 

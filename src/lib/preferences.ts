@@ -14,6 +14,17 @@ export const DEFAULT_TRANSPORT_MODES = ["train", "tram", "bus", "vline"] as cons
 export const DEFAULT_PREMIUM_PRICE_AUD = 5;
 export type MobilePerformanceMode = "auto" | "on" | "off";
 
+// Optional account filters stored at appPreferences.favouriteSetNotifications.
+// Null/omitted lists mean unrestricted; an empty list matches nothing.
+export type FavouriteSetNotificationFilters = {
+  enabled?: boolean;
+  lines?: string[] | null;
+  vehicleTypes?: string[] | null;
+  timeZone?: string;
+  timePeriods?: { start: string; end: string }[] | null;
+  quietHours?: { enabled?: boolean; start: string; end: string } | null;
+};
+
 export const defaultPreferences: UserPreferences = {
   favouriteStops: [],
   favouriteRoutes: [],

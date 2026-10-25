@@ -343,10 +343,37 @@ export default async function handler(req, res) {
   });
 }
 
+// PTV's real feed has been observed flapping down/up within a single
+// ~60s poll cycle — a real, momentary blip, not a genuine outage — which
+// previously fired a full "Suspended"/"Back Online" push pair every time,
+// spamming the phone roughly hourly. Require the RAW status to agree
+// across several consecutive checks before the CONFIRMED status (what
+// callers actually see) flips either way, so a one-cycle blip never
+// reaches a push notification while a real, sustained outage still gets
+// reported within a few minutes.
+const TRAM_FEED_DEBOUNCE_THRESHOLD = 3;
+let tramFeedConfirmedDown = false;
+let tramFeedConsecutiveDown = 0;
+let tramFeedConsecutiveUp = 0;
+
 // Used by metro-notify/alerts.js to decide whether to surface a real "tram
 // tracking is down" alert — reuses the exact same check this handler does,
 // so the alert only ever reflects a genuine, currently-confirmed outage.
 export async function checkTramFeedStatus() {
+  const rawStatus = await checkTramFeedStatusRaw();
+  if (rawStatus.down) {
+    tramFeedConsecutiveDown += 1;
+    tramFeedConsecutiveUp = 0;
+    if (tramFeedConsecutiveDown >= TRAM_FEED_DEBOUNCE_THRESHOLD) tramFeedConfirmedDown = true;
+  } else {
+    tramFeedConsecutiveUp += 1;
+    tramFeedConsecutiveDown = 0;
+    if (tramFeedConsecutiveUp >= TRAM_FEED_DEBOUNCE_THRESHOLD) tramFeedConfirmedDown = false;
+  }
+  return { down: tramFeedConfirmedDown };
+}
+
+async function checkTramFeedStatusRaw() {
   const ptvSubscriptionKey =
     process.env.PTV_SUBSCRIPTION_KEY ||
     process.env.PTV_subscription_key ||

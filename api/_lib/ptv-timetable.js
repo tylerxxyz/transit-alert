@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { groupTrainWorkings, neighbouringTrainWorkings } from "./train-workings.js";
+import { getNonPassengerPassThroughs } from "./freight-timing-data.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import AdmZip from "adm-zip";
@@ -12,6 +13,9 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const DEFAULT_GTFS_PATH = path.join(REPO_ROOT, ".local-host", "gtfs.zip");
 const BUS_STOP_TIMES_PATH = path.join(REPO_ROOT, ".local-host", "gtfs-bus", "stop_times.txt");
 const BUS_STOP_INDEX_PATH = path.join(REPO_ROOT, ".local-host", "gtfs-bus", "stop-times-index.json");
+const BUS_SHAPES_PATH = path.join(REPO_ROOT, ".local-host", "gtfs-bus", "shapes.txt");
+const BUS_SHAPES_INDEX_PATH = path.join(REPO_ROOT, ".local-host", "gtfs-bus", "shapes-index.json");
+const STOP_HEADSIGNS_PATH = path.join(REPO_ROOT, ".local-host", "gtfs-bus", "stop-headsigns.json");
 const METRO_REALTIME_URL =
   "https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/metro";
 const VLINE_REALTIME_URL =
@@ -28,6 +32,25 @@ const MINIMUM_REALISTIC_TURNAROUND_SECONDS = 60;
 const realtimeCache = new Map();
 let timetablePromise;
 let busStopIndex;
+let busShapeIndex;
+let stopHeadsignIndex;
+
+// PTV's live departures API resolves a lat/lng to whichever real-time stop
+// is NEAREST within 500m (see getVerifiedSurfaceStopDepartures below) — for
+// two closely-spaced physical stops serving opposite directions of the same
+// route (e.g. a shelter on each side of a road, both real GTFS stops but
+// sharing one live PTV timepoint), that collapses both directions onto
+// whichever physical stop a rider actually tapped. Confirmed live: real
+// stop_id 16209 ("Luntar Rd/Centre Rd") only ever has westbound "Middle
+// Brighton" trips in the static schedule, its neighbour 17615 (same name,
+// ~125m east) only ever has eastbound "Blackburn" ones, yet both showed
+// both directions before this filter existed. Real headsigns per exact
+// static stop_id, built by .local-host/build-bus-stop-headsigns-index.mjs.
+function getKnownHeadsignsForStop(stopId) {
+  if (!stopId || !fs.existsSync(STOP_HEADSIGNS_PATH)) return null;
+  stopHeadsignIndex ||= JSON.parse(fs.readFileSync(STOP_HEADSIGNS_PATH, "utf8"));
+  return stopHeadsignIndex[stopId] ?? null;
+}
 let trainMarkerDestinationsPromise;
 let tripStartIndexPromise;
 
@@ -57,6 +80,37 @@ export function readIndexedBusStopTimes(tripId) {
     });
   });
   return rows.sort((left, right) => left.stopSequence - right.stopSequence);
+}
+
+// Melbourne's real bus GTFS shapes.txt is 90MB+ (every route's actual
+// road-following geometry, tens of thousands of points) — reading it whole
+// into memory to serve one journey leg's single shape would be wasteful.
+// Same byte-offset-index-and-seek approach already used for bus stop_times
+// above: a route's shape rows are all contiguous in the real file (verified
+// directly against this feed — every shape_id appears as exactly one
+// unbroken block, never scattered), so one seek + one read covers it.
+export function readIndexedBusShape(shapeId) {
+  if (!shapeId || !fs.existsSync(BUS_SHAPES_PATH) || !fs.existsSync(BUS_SHAPES_INDEX_PATH)) return [];
+  busShapeIndex ||= JSON.parse(fs.readFileSync(BUS_SHAPES_INDEX_PATH, "utf8"));
+  const range = busShapeIndex[shapeId];
+  if (!range) return [];
+  const [start, end] = range;
+  const buffer = Buffer.allocUnsafe(end - start);
+  const descriptor = fs.openSync(BUS_SHAPES_PATH, "r");
+  try {
+    fs.readSync(descriptor, buffer, 0, buffer.length, start);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  const points = [];
+  forEachCsvRow(`shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence,shape_dist_traveled\n${buffer.toString("utf8")}`, (row) => {
+    const lat = Number(row.shape_pt_lat);
+    const lng = Number(row.shape_pt_lon);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      points.push({ lat, lng, sequence: Number(row.shape_pt_sequence) });
+    }
+  });
+  return points.sort((left, right) => left.sequence - right.sequence).map((point) => [point.lat, point.lng]);
 }
 
 function parseCsvLine(line) {
@@ -167,6 +221,7 @@ function buildModeIndex(outerZip, folder, includeStopTimes) {
       blockId: row.block_id || undefined,
       destination: row.trip_headsign,
       directionId: row.direction_id,
+      shapeId: row.shape_id || undefined,
     });
   });
 
@@ -434,11 +489,15 @@ export async function getVerifiedStationDepartures(stationName) {
   const windowEnd = now + 3 * 60 * 60 * 1000;
   const departures = [];
   const seenTrips = new Set();
+  let stationPosition = null;
 
   for (const serviceDate of [getPreviousServiceDate(), getServiceDate()]) {
     for (const { mode: trainMode, realtimeTrips } of trainModes) {
       for (const stopId of trainMode.stopIdsByName.get(stationKey) || []) {
        const stop = trainMode.stops.get(stopId);
+       if (!stationPosition && typeof stop?.lat === "number" && typeof stop?.lng === "number") {
+         stationPosition = [stop.lat, stop.lng];
+       }
        for (const stopTime of trainMode.stopTimesByStop.get(stopId) || []) {
         const trip = trainMode.trips.get(stopTime.tripId);
         if (!trip || seenTrips.has(trip.id) || !isServiceActive(trainMode, trip.serviceId, serviceDate)) continue;
@@ -457,7 +516,10 @@ export async function getVerifiedStationDepartures(stationName) {
         // (without marking seenTrips) so the correctly-dated pass can still
         // claim this trip instead of being locked out by the mismatched one.
         if (realtimeSeconds && Math.abs(expectedDate.getTime() - scheduledDate.getTime()) > 3 * 60 * 60 * 1000) continue;
-        if (expectedDate.getTime() < now - 60_000 || expectedDate.getTime() > windowEnd) continue;
+        // A service stays on the board for a couple of minutes after it's
+        // left rather than vanishing the instant it departs — riders walking
+        // up to a platform still want to see "that one just left" briefly.
+        if (expectedDate.getTime() < now - 2 * 60_000 || expectedDate.getTime() > windowEnd) continue;
         seenTrips.add(trip.id);
         const route = trainMode.routes.get(trip.routeId);
         const tripRelationship = toNumber(realtimeTrip?.trip?.scheduleRelationship);
@@ -466,7 +528,7 @@ export async function getVerifiedStationDepartures(stationName) {
           tripId: trip.id,
           route: route?.shortName || route?.longName || "Metro",
           destination: stopTime.stopHeadsign || trip.destination || "Destination unavailable",
-          ...resolveTrainPlatformDetails(stop, realtimeStop, trainMode.stops),
+          ...resolveTrainPlatformDetails(stop, realtimeStop, trainMode.stops, undefined, trainMode === timetable.regionalTrain ? { tripDestination: trip.destination, routeId: trip.routeId } : undefined),
           stopId,
           scheduledAt: scheduledDate.toISOString(),
           expectedAt: expectedDate.toISOString(),
@@ -488,9 +550,16 @@ export async function getVerifiedStationDepartures(stationName) {
     const platform = await getVlineDeparturePlatform(mode.stops.get(departure.stopId), trip, departure.scheduledAt);
     if (platform) Object.assign(departure, { platform, platformSource: "LIVE" });
   }));
+  // Computed from a fully separate, non-GTFS data source and never merged
+  // into `departures` — freight/heritage/empty-car pass-throughs must never
+  // affect the real passenger sort/slice/next-departure logic above.
+  const nonPassengerPassThroughs = stationPosition
+    ? getNonPassengerPassThroughs(stationName, stationPosition)
+    : [];
   return {
     stationName,
     departures: visibleDepartures,
+    nonPassengerPassThroughs,
     generatedAt: new Date().toISOString(),
     realtimeFeedAt: Math.max(...trainModes.map(({ realtimeFeed }) => toNumber(realtimeFeed?.header?.timestamp)), 0)
       ? new Date(Math.max(...trainModes.map(({ realtimeFeed }) => toNumber(realtimeFeed?.header?.timestamp))) * 1000).toISOString()
@@ -562,6 +631,8 @@ export async function getVerifiedTrainTrip(tripId) {
   if (realtimeTrip) realtimeTrips.set(tripId, realtimeTrip);
   const buildStops = (targetTripId) => {
     const targetRealtimeTrip = realtimeTrips.get(targetTripId);
+    const targetTrip = trainMode.trips.get(targetTripId);
+    const targetTripDestination = targetTrip?.destination;
     return (trainMode.stopTimesByTrip.get(targetTripId) || [])
     .sort((left, right) => left.stopSequence - right.stopSequence)
     .map((stopTime) => {
@@ -586,7 +657,7 @@ export async function getVerifiedTrainTrip(tripId) {
         // GTFS pickup_type/drop_off_type: "1" means not offered at this stop.
         pickupType: stopTime.pickupType === "1" ? "none" : undefined,
         dropOffType: stopTime.dropOffType === "1" ? "none" : undefined,
-        ...resolveTrainPlatformDetails(stop, realtimeStop, trainMode.stops),
+        ...resolveTrainPlatformDetails(stop, realtimeStop, trainMode.stops, undefined, isRegionalTrip ? { tripDestination: targetTripDestination, routeId: targetTrip?.routeId } : undefined),
         lat: Number.isFinite(stop?.lat) ? stop.lat : undefined,
         lng: Number.isFinite(stop?.lng) ? stop.lng : undefined,
         scheduledArrivalAt: scheduledArrival.toISOString(),
@@ -657,16 +728,21 @@ export async function getVerifiedTrainTrip(tripId) {
         // pattern going out and doubling back through the same stations.
         // Treat it as a distinct next/previous service instead (see
         // nextServices below), not part of this trip's own stop list.
+        // There's deliberately no upper bound on the gap: this candidate is
+        // already confirmed via a shared block_id at the exact handover
+        // station, and the smallest-gap match is kept, so a longer real-world
+        // layover (a train stabled for hours between peak duties is normal)
+        // is still the correct link, not something to discard as unconfirmed.
         if (candidateLast?.stopId === firstOwnStop.stopId) {
           const gap = gtfsSeconds(firstOwnStop.departureTime || firstOwnStop.arrivalTime) - gtfsSeconds(candidateLast.arrivalTime || candidateLast.departureTime);
-          if (gap >= MINIMUM_REALISTIC_TURNAROUND_SECONDS && gap <= 3600 && gap < bestPreviousGap) {
+          if (gap >= MINIMUM_REALISTIC_TURNAROUND_SECONDS && gap < bestPreviousGap) {
             previousFormationTripId = candidateTripId;
             bestPreviousGap = gap;
           }
         }
         if (candidateFirst?.stopId === lastOwnStop.stopId) {
           const gap = gtfsSeconds(candidateFirst.departureTime || candidateFirst.arrivalTime) - gtfsSeconds(lastOwnStop.arrivalTime || lastOwnStop.departureTime);
-          if (gap >= MINIMUM_REALISTIC_TURNAROUND_SECONDS && gap <= 3600 && gap < bestNextGap) {
+          if (gap >= MINIMUM_REALISTIC_TURNAROUND_SECONDS && gap < bestNextGap) {
             nextFormationTripId = candidateTripId;
             bestNextGap = gap;
           }
@@ -1057,6 +1133,23 @@ export async function getVerifiedSurfaceStopDepartures({ mode: modeName, route, 
     directionItems = collectionValues(directionData.directions);
   }
   const directions = new Map(directionItems.map((item) => [String(item.direction_id), item]));
+  // A multi-route interchange bay (no `route` filter — every route serving
+  // this exact stop) can return departures for several distinct routes, but
+  // PTV's own departures response only inlines direction data for some of
+  // them. A direction lookup miss below used to silently fall back to the
+  // whole bidirectional route name (e.g. "828 to Hampton - Berwick
+  // Station", a real route's two different termini glued together, not a
+  // real single-direction destination) — backfill directions for every
+  // route_id actually present in the departures, not just the one route
+  // this call happened to be scoped to.
+  const missingRouteIds = [...new Set((data.departures || []).map((departure) => String(departure.route_id)))]
+    .filter((routeId) => ![...directions.values()].some((direction) => String(direction.route_id) === routeId));
+  await Promise.all(missingRouteIds.map(async (routeId) => {
+    const directionData = await ptvV3Fetch(`/v3/directions/route/${encodeURIComponent(routeId)}`).catch(() => null);
+    for (const item of collectionValues(directionData?.directions)) {
+      directions.set(String(item.direction_id), item);
+    }
+  }));
   const departures = (data.departures || [])
     .map((departure) => {
       const routeInfo = routes.get(String(departure.route_id));
@@ -1064,7 +1157,13 @@ export async function getVerifiedSurfaceStopDepartures({ mode: modeName, route, 
       const direction = directions.get(String(departure.direction_id));
       return {
         route: routeLabel,
-        destination: direction?.direction_name || routeInfo?.route_name || "Destination unavailable",
+        // routeInfo.route_name is the WHOLE route's own name spanning both
+        // termini (e.g. "Fountain Gate SC - Hampton via Berwick Station") —
+        // showing that as if it were this one departure's single-direction
+        // destination reads as nonsense ("828 to Hampton - Berwick
+        // Station"). Better to say plainly that the real destination isn't
+        // known yet than to display a wrong-looking one.
+        destination: direction?.direction_name || "Destination unavailable",
         // PTV occasionally publishes a live estimate without its scheduled
         // timestamp. Keep the client contract valid and treat the estimate as
         // the baseline in that case, rather than serialising a missing date.
@@ -1076,6 +1175,22 @@ export async function getVerifiedSurfaceStopDepartures({ mode: modeName, route, 
       };
     })
     .filter((departure) => !requestedRoute || departure.route.toLowerCase() === requestedRoute)
+    .filter((departure) => {
+      // Drop a direction the real static schedule never assigns to this
+      // exact physical stop (see getKnownHeadsignsForStop above) — this is
+      // what actually separates two closely-spaced, identically-named stops
+      // that PTV's live lookup otherwise merges into one. No index data for
+      // this stop, or an unresolved destination, is never treated as a
+      // reason to hide a departure.
+      const knownHeadsigns = getKnownHeadsignsForStop(stop.id);
+      if (!knownHeadsigns || knownHeadsigns.length === 0) return true;
+      const destination = departure.destination.toLowerCase();
+      if (destination === "destination unavailable") return true;
+      return knownHeadsigns.some((headsign) => {
+        const normalised = headsign.toLowerCase();
+        return normalised.includes(destination) || destination.includes(normalised);
+      });
+    })
     .filter((departure) => departure.expectedAt)
     .sort((left, right) => Date.parse(left.expectedAt) - Date.parse(right.expectedAt))
     .slice(0, 12);

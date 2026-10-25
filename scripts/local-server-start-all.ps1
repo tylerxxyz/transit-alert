@@ -15,10 +15,53 @@ function Write-HealthLog([string]$Message) {
   Add-Content -LiteralPath $healthLog -Value "$(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssK') $Message"
 }
 
+# The database bridge is a separate local service from the public app host.
+# Keep it under the existing logon watchdog so a reboot or process exit does
+# not silently leave the app's database-backed features disconnected.
+$databaseBridgeDir = 'C:\Users\tyler\Documents\Codex\2026-10-07\us\work\transit-alert-migration\local-db-bridge'
+$databaseBridgeScript = Join-Path $databaseBridgeDir 'server.mjs'
+$databaseBridgeOutLog = Join-Path $databaseBridgeDir 'bridge-out.log'
+$databaseBridgeErrorLog = Join-Path $databaseBridgeDir 'bridge-error.log'
+$nodePath = 'C:\Users\tyler\AppData\Local\Programs\NodeJS\node-v24.21.0-win-x64\node.exe'
+$databaseBridgeHealthy = $false
+try {
+  $databaseBridgeProbe = Invoke-WebRequest -Uri 'http://127.0.0.1:18787/health' -UseBasicParsing -TimeoutSec 3 -SkipHttpErrorCheck
+  $databaseBridgeHealthy = ($databaseBridgeProbe.StatusCode -eq 401 -and $databaseBridgeProbe.Content -match '"error"\s*:\s*"unauthorized"')
+} catch {
+  $databaseBridgeHealthy = $false
+}
+
+if (-not $databaseBridgeHealthy) {
+  $databaseBridgeListener = Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort 18787 -State Listen -ErrorAction SilentlyContinue
+  if ($databaseBridgeListener) {
+    Write-HealthLog 'Database bridge port is occupied but its health probe failed; leaving the existing process untouched.'
+  } elseif ((Test-Path -LiteralPath $nodePath) -and (Test-Path -LiteralPath $databaseBridgeScript)) {
+    Write-HealthLog 'Database bridge is offline; starting a replacement.'
+    Start-Process -FilePath $nodePath `
+      -ArgumentList @($databaseBridgeScript) `
+      -WorkingDirectory $databaseBridgeDir `
+      -WindowStyle Hidden `
+      -RedirectStandardOutput $databaseBridgeOutLog `
+      -RedirectStandardError $databaseBridgeErrorLog
+  } else {
+    Write-HealthLog 'Database bridge could not start because its Node runtime or server script is missing.'
+  }
+}
+
 # Run the host check in this process. Spawning a nested PowerShell here could
 # leave the watchdog waiting indefinitely after Windows logon, so the tunnel
 # startup below was never reached.
-& $hostStart | Out-Null
+try {
+  & $hostStart
+} catch {
+  # A failure here used to kill this entire script (ErrorActionPreference =
+  # Stop), which meant the Cloudflare tunnel logic below was never reached
+  # either -- a transient local-host problem (missing build, port still
+  # settling after boot, etc.) took the public tunnel down with it. Log it
+  # and keep going; the supervisor calls this script again in 15s so the
+  # host gets retried, and the tunnel stays managed in the meantime.
+  Write-HealthLog "Local host start failed: $($_.Exception.Message)"
+}
 
 if (!(Test-Path -LiteralPath $cloudflaredPath)) {
   throw "Cloudflare connector is missing: $cloudflaredPath"
@@ -48,7 +91,68 @@ if (-not $running) {
 
 if ($running) {
   Set-Content -LiteralPath $pidPath -Value $running.Id -Encoding ASCII
-  exit 0
+
+  # A cloudflared process can stay alive while stuck retrying failed
+  # connections to Cloudflare's edge — observed repeatedly on this machine
+  # as WSL2's virtual network adapter re-negotiates (Windows 10 doesn't
+  # support WSL2 "mirrored" networking, so this churn is expected to keep
+  # happening as long as WSL/Home Assistant runs here) — the site is down
+  # but this process-liveness check alone reads it as healthy and never
+  # restarts it. Periodically confirm the public hostname actually answers;
+  # a short interval and low failure threshold matter here specifically
+  # because this flapping has been observed recurring every 1-5 minutes,
+  # not as a rare one-off — waiting minutes to react leaves the site down
+  # for the whole gap.
+  $healthStatePath = Join-Path $publicDir "tunnel-health.json"
+  $healthCheckIntervalSeconds = 20
+  $state = @{ lastCheckedAt = $null; consecutiveFailures = 0 }
+  if (Test-Path -LiteralPath $healthStatePath) {
+    try {
+      $loaded = Get-Content -LiteralPath $healthStatePath -Raw | ConvertFrom-Json
+      $state.lastCheckedAt = $loaded.lastCheckedAt
+      $state.consecutiveFailures = [int]$loaded.consecutiveFailures
+    } catch {
+      # Corrupt or missing state file — fall back to the defaults above.
+    }
+  }
+
+  $dueForCheck = $true
+  if ($state.lastCheckedAt) {
+    $elapsed = (Get-Date) - [datetime]$state.lastCheckedAt
+    $dueForCheck = $elapsed.TotalSeconds -ge $healthCheckIntervalSeconds
+  }
+
+  if (-not $dueForCheck) {
+    exit 0
+  }
+
+  $reachable = $false
+  try {
+    $response = Invoke-WebRequest -Uri "https://transit-alert.com/" -UseBasicParsing -TimeoutSec 10
+    $reachable = $response.StatusCode -eq 200
+  } catch {
+    $reachable = $false
+  }
+
+  $state.lastCheckedAt = (Get-Date).ToString("o")
+  if ($reachable) {
+    $state.consecutiveFailures = 0
+    $state | ConvertTo-Json | Set-Content -LiteralPath $healthStatePath -Encoding UTF8
+    exit 0
+  }
+
+  $state.consecutiveFailures += 1
+  $state | ConvertTo-Json | Set-Content -LiteralPath $healthStatePath -Encoding UTF8
+
+  if ($state.consecutiveFailures -lt 1) {
+    exit 0
+  }
+
+  Write-HealthLog "Cloudflare connector process is alive but transit-alert.com is not reachable after $($state.consecutiveFailures) checks; forcing a restart."
+  Stop-Process -Id $running.Id -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
+  $state.consecutiveFailures = 0
+  $state | ConvertTo-Json | Set-Content -LiteralPath $healthStatePath -Encoding UTF8
 }
 
 Write-HealthLog "Cloudflare connector was offline; starting a replacement using HTTP/2."

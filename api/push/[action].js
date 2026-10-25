@@ -9,6 +9,8 @@ import {
   sendPushToAllSubscriptions,
   sendRecentAlertsTestBatch,
   sendTestPush,
+  saveUserPushPreferences,
+  readUserPushPreferences,
 } from "../_lib/push.js";
 
 export default async function handler(req, res) {
@@ -58,6 +60,36 @@ export default async function handler(req, res) {
     }
     const removed = await removeSubscriptionByEndpoint(body.endpoint);
     sendJson(res, 200, { unsubscribed: removed });
+    return;
+  }
+
+  if (action === "preferences" && ["GET", "POST"].includes(req.method)) {
+    const user = await getSessionUser(req).catch(() => null);
+    if (!user || user.id === "guest-session" || user.role === "Guest") {
+      sendJson(res, 401, { error: "Sign in to manage notification preferences" });
+      return;
+    }
+    if (req.method === "GET") {
+      const preferences = await readUserPushPreferences(user.id);
+      sendJson(res, preferences ? 200 : 503, preferences ?? { error: "Preferences unavailable" });
+      return;
+    }
+    const body = await readJsonBody(req);
+    const patch = {};
+    for (const key of ["categories", "lines"]) {
+      if (body?.[key] === undefined) continue;
+      if (body[key] !== null && (!Array.isArray(body[key]) || !body[key].every(value => typeof value === "string" && value.trim()))) {
+        sendJson(res, 400, { error: "Invalid notification preferences" });
+        return;
+      }
+      patch[key] = body[key] === null ? null : [...new Set(body[key].map(value => value.trim()))];
+    }
+    if (!body?.endpoint || !Object.keys(patch).length) {
+      sendJson(res, 400, { error: "An endpoint and categories or lines are required" });
+      return;
+    }
+    const updated = await saveUserPushPreferences(user.id, body.endpoint, patch);
+    sendJson(res, updated ? 200 : 403, { updated });
     return;
   }
 

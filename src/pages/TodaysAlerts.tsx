@@ -40,6 +40,7 @@ type AlertGroupId =
   | "vline-geelong"
   | "vline-gippsland"
   | "vline-seymour"
+  | "xpt"
   | "other";
 
 type AlertFilter = {
@@ -81,7 +82,18 @@ const ALERT_FILTERS: AlertFilter[] = [
 ];
 
 import { ALERT_NOTIFICATIONS_KEY, setNotificationsEnabled, showAppNotification } from "@/lib/pwa";
-import { subscribeToPush, unsubscribeFromPush } from "@/lib/push";
+import {
+  PUSH_LINE_GROUPS,
+  PUSH_NOTIFICATION_CATEGORIES,
+  fetchPushPreferences,
+  readPushCategories,
+  readPushLines,
+  subscribeToPush,
+  unsubscribeFromPush,
+  updatePushCategories,
+  type PushLineGroup,
+  updatePushLines,
+} from "@/lib/push";
 
 const ALERT_GROUPS: AlertGroup[] = [
   { id: "all", label: "All groups", activeClassName: "border-white/25 bg-white/12 text-white", inactiveBadgeClassName: "border-white/10 bg-white/5 text-white/70", activeBadgeClassName: "border-white/25 bg-white/12 text-white" },
@@ -90,7 +102,7 @@ const ALERT_GROUPS: AlertGroup[] = [
   { id: "stony-point", label: "Stony Point", aliases: ["stony point line", "leawarra", "baxter", "somerville", "tyabb", "hastings", "bittern", "crib point", "morradoo", "stony point"], activeClassName: "border-[#028430]/45 bg-[#028430]/18 text-[#B9F5CE]", inactiveBadgeClassName: "border-[#028430]/25 bg-[#028430]/12 text-[#B9F5CE]", activeBadgeClassName: "border-[#028430]/45 bg-[#028430]/18 text-[#B9F5CE]" },
   { id: "cross-city", label: "Werribee, Williamstown and Sandringham", aliases: ["laverton", "werribee line", "williamstown line", "altona loop", "north williamstown", "williamstown beach", "williamstown", "newport", "spotswood", "yarraville", "seddon", "south kensington", "aircraft", "williams landing", "hoppers crossing", "seaholme", "altona", "westona", "werribee", "point cook", "galvin", "paisley", "sandringham line", "prahran", "windsor", "balaclava", "ripponlea", "elsternwick", "gardenvale", "north brighton", "middle brighton", "brighton beach", "hampton", "sandringham"], activeClassName: "border-[#F178AF]/45 bg-[#F178AF]/18 text-[#FFD8EA]", inactiveBadgeClassName: "border-[#F178AF]/25 bg-[#F178AF]/12 text-[#FFD8EA]", activeBadgeClassName: "border-[#F178AF]/45 bg-[#F178AF]/18 text-[#FFD8EA]" },
   { id: "burnley", label: "Belgrave / Lilydale / Alamein / Glen Waverley", aliases: ["belgrave line", "lilydale line", "glen waverley line", "alamein line", "burnley", "east richmond", "hawthorn", "glenferrie", "auburn", "camberwell", "east camberwell", "canterbury", "chatham", "surrey hills", "mont albert", "box hill", "laburnum", "blackburn", "nunawading", "mitcham", "heatherdale", "ringwood", "ringwood east", "croydon", "mooroolbark", "lilydale", "upper ferntree gully", "ferntree gully", "boronia", "bayswater", "heathmont", "tecoma", "belgrave", "riversdale", "willison", "hartwell", "burwood", "ashburton", "alamein", "heyington", "kooyong", "tooronga", "gardiner", "glen iris", "darling", "east malvern", "holmesglen", "jordanville", "mount waverley", "syndal", "glen waverley"], activeClassName: "border-[#4DA3FF]/55 bg-[linear-gradient(135deg,rgba(21,44,107,0.72),rgba(2,6,23,0.92))] text-[#DBEAFF] shadow-[0_0_28px_rgba(77,163,255,0.18)]", inactiveBadgeClassName: "border-[#4DA3FF]/30 bg-[#152C6B]/28 text-[#C8DDFF]", activeBadgeClassName: "border-[#4DA3FF]/50 bg-[#4DA3FF]/16 text-[#EAF4FF]" },
-  { id: "clifton-hill", label: "Clifton Hill", aliases: ["mernda line", "hurstbridge line", "jolimont", "west richmond", "north richmond", "collingwood", "victoria park", "clifton hill", "rushall", "merri", "northcote", "croxton", "thornbury", "bell", "preston", "regent", "reservoir", "ruthven", "keon park", "thomastown", "lalor", "epping", "south morang", "middle gorge", "hawkstowe", "mernda", "westgarth", "dennis", "fairfield", "alphington", "darebin", "ivanhoe", "eaglemont", "heidelberg", "rosanna", "macleod", "watsonia", "greensborough", "montmorency", "eltham", "diamond creek", "wattle glen", "hurstbridge"], activeClassName: "border-rose-400/35 bg-rose-500/15 text-rose-100", inactiveBadgeClassName: "border-rose-400/15 bg-rose-500/10 text-rose-100/85", activeBadgeClassName: "border-rose-400/35 bg-rose-500/15 text-rose-100" },
+  { id: "clifton-hill", label: "Mernda / Hurstbridge / Clifton Hill", aliases: ["mernda line", "hurstbridge line", "jolimont", "west richmond", "north richmond", "collingwood", "victoria park", "clifton hill", "rushall", "merri", "northcote", "croxton", "thornbury", "bell", "preston", "regent", "reservoir", "ruthven", "keon park", "thomastown", "lalor", "epping", "south morang", "middle gorge", "hawkstowe", "mernda", "westgarth", "dennis", "fairfield", "alphington", "darebin", "ivanhoe", "eaglemont", "heidelberg", "rosanna", "macleod", "watsonia", "greensborough", "montmorency", "eltham", "diamond creek", "wattle glen", "hurstbridge"], activeClassName: "border-rose-400/35 bg-rose-500/15 text-rose-100", inactiveBadgeClassName: "border-rose-400/15 bg-rose-500/10 text-rose-100/85", activeBadgeClassName: "border-rose-400/35 bg-rose-500/15 text-rose-100" },
   { id: "northern", label: "Upfield and Craigieburn", aliases: ["upfield line", "craigieburn line", "north melbourne", "kensington", "newmarket", "ascot vale", "moonee ponds", "essendon", "glenbervie", "strathmore", "pascoe vale", "oak park", "glenroy", "jacana", "broadmeadows", "coolaroo", "roxburgh park", "craigieburn", "macaulay", "flemington bridge", "royal park", "jewell", "brunswick", "anstey", "moreland", "coburg", "batman", "merlynston", "fawkner", "gowrie", "upfield"], activeClassName: "border-amber-400/35 bg-amber-500/15 text-amber-100", inactiveBadgeClassName: "border-amber-400/15 bg-amber-500/10 text-amber-100/85", activeBadgeClassName: "border-amber-400/35 bg-amber-500/15 text-amber-100" },
   { id: "vline-ballarat", label: "Ballarat", activeClassName: "border-[#B48CE8]/45 bg-[#B48CE8]/18 text-[#EBE0FB]", inactiveBadgeClassName: "border-[#B48CE8]/25 bg-[#B48CE8]/12 text-[#EBE0FB]", activeBadgeClassName: "border-[#B48CE8]/45 bg-[#B48CE8]/18 text-[#EBE0FB]" },
   { id: "vline-bendigo", label: "Bendigo", activeClassName: "border-[#B48CE8]/45 bg-[#B48CE8]/18 text-[#EBE0FB]", inactiveBadgeClassName: "border-[#B48CE8]/25 bg-[#B48CE8]/12 text-[#EBE0FB]", activeBadgeClassName: "border-[#B48CE8]/45 bg-[#B48CE8]/18 text-[#EBE0FB]" },
@@ -99,6 +111,7 @@ const ALERT_GROUPS: AlertGroup[] = [
   { id: "vline-seymour", label: "Seymour", activeClassName: "border-[#B48CE8]/45 bg-[#B48CE8]/18 text-[#EBE0FB]", inactiveBadgeClassName: "border-[#B48CE8]/25 bg-[#B48CE8]/12 text-[#EBE0FB]", activeBadgeClassName: "border-[#B48CE8]/45 bg-[#B48CE8]/18 text-[#EBE0FB]" },
   { id: "buses", label: "Buses", activeClassName: "border-[#FF8200]/45 bg-[#FF8200]/18 text-[#FFE1BF]", inactiveBadgeClassName: "border-[#FF8200]/25 bg-[#FF8200]/12 text-[#FFE1BF]", activeBadgeClassName: "border-[#FF8200]/45 bg-[#FF8200]/18 text-[#FFE1BF]" },
   { id: "trams", label: "Trams", activeClassName: "border-lime-400/35 bg-lime-500/15 text-lime-100", inactiveBadgeClassName: "border-lime-400/15 bg-lime-500/10 text-lime-100/85", activeBadgeClassName: "border-lime-400/35 bg-lime-500/15 text-lime-100" },
+  { id: "xpt", label: "Sydney XPT", activeClassName: "border-sky-400/35 bg-sky-500/15 text-sky-100", inactiveBadgeClassName: "border-sky-400/15 bg-sky-500/10 text-sky-100/85", activeBadgeClassName: "border-sky-400/35 bg-sky-500/15 text-sky-100" },
   { id: "other", label: "Other", activeClassName: "border-slate-300/35 bg-slate-400/15 text-slate-100", inactiveBadgeClassName: "border-slate-300/15 bg-slate-400/10 text-slate-100/85", activeBadgeClassName: "border-slate-300/35 bg-slate-400/15 text-slate-100" },
 ];
 
@@ -148,6 +161,8 @@ function getAlertGroupStripTone(group: AlertGroup) {
       return "bg-[#FF8200]";
     case "trams":
       return "bg-lime-400";
+    case "xpt":
+      return "bg-sky-400";
     default:
       return "bg-slate-400";
   }
@@ -239,6 +254,9 @@ function getAlertGroup(alert: MetroNotifyAlert): AlertGroup {
   }
   if (alert.mode === "tram") {
     return ALERT_GROUPS.find((group) => group.id === "trams")!;
+  }
+  if (alert.mode === "xpt") {
+    return ALERT_GROUPS.find((group) => group.id === "xpt")!;
   }
   // V/Line disruptions carry a `corridors` list resolved server-side from
   // structured GTFS route data first, affected stations second, and text
@@ -775,9 +793,16 @@ export default function TodaysAlerts() {
   const [browserNotificationPermission, setBrowserNotificationPermission] = useState<NotificationPermission | "unsupported">(
     typeof window === "undefined" || !("Notification" in window) ? "unsupported" : Notification.permission,
   );
+  // null means "every category" — matches readPushCategories()'s own default
+  // so a rider who's never touched this sees every box checked, the same
+  // behaviour they already had before this preference existed.
+  const [pushCategories, setPushCategories] = useState<string[] | null>(() => readPushCategories());
+  // null means "every line" — same default-everything contract as
+  // pushCategories above.
+  const [pushLines, setPushLines] = useState<string[] | null>(() => readPushLines());
   const seenAlertIdsRef = useRef<string[]>([]);
-  const { data: reports } = useGetReports({
-    query: { refetchInterval: 60000 },
+  const { data: reports, isError: reportsError } = useGetReports({
+    query: { queryKey: ["/api/reports"], refetchInterval: 60000 },
   });
 
   const { data: metroAlerts = [] } = useQuery({
@@ -941,6 +966,64 @@ export default function TodaysAlerts() {
     }
   };
 
+  // Toggling a box only updates local state now — the actual save (and the
+  // network round trip that comes with it) happens once, when Apply changes
+  // is pressed, rather than firing on every single tap.
+  const [hasPendingPushChanges, setHasPendingPushChanges] = useState(false);
+  const [isApplyingPushChanges, setIsApplyingPushChanges] = useState(false);
+  const [pushSaveError, setPushSaveError] = useState("");
+
+  useEffect(() => {
+    if (hasPendingPushChanges) return;
+    let active = true;
+    void fetchPushPreferences().then((saved) => {
+      if (active && saved) { setPushCategories(saved.categories); setPushLines(saved.lines); }
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [hasPendingPushChanges]);
+
+  const handleTogglePushCategory = (categoryId: string) => {
+    // Legacy defaults include disruption categories; favourite tracking is opt-in.
+    const current = pushCategories ?? PUSH_NOTIFICATION_CATEGORIES.filter((category) => category.id !== "train-tracking").map((category) => category.id);
+    const next = current.includes(categoryId)
+      ? current.filter((id) => id !== categoryId)
+      : [...current, categoryId];
+    // Keep the explicit list, including [] and the tracking opt-in.
+    const nextValue = next;
+    setPushCategories(nextValue);
+    setHasPendingPushChanges(true);
+  };
+
+  const allPushLines = PUSH_LINE_GROUPS.flatMap((group) => group.lines);
+
+  const handleTogglePushLineGroup = (group: PushLineGroup) => {
+    // null (today's state) reads as "every line" — same expand-to-explicit-
+    // list pattern as handleTogglePushCategory above. A group toggles all of
+    // its real line names together as a unit.
+    const current = pushLines ?? allPushLines;
+    const isGroupChecked = group.lines.every((line) => current.includes(line));
+    const next = isGroupChecked
+      ? current.filter((line) => !group.lines.includes(line))
+      : [...current, ...group.lines.filter((line) => !current.includes(line))];
+    const nextValue = next.length === allPushLines.length ? null : next;
+    setPushLines(nextValue);
+    setHasPendingPushChanges(true);
+  };
+
+  const handleApplyPushChanges = async () => {
+    setIsApplyingPushChanges(true);
+    setPushSaveError("");
+    try {
+      const saved = await Promise.all([updatePushCategories(pushCategories), updatePushLines(pushLines)]);
+      if (saved.every(Boolean)) setHasPendingPushChanges(false);
+      else setPushSaveError("Preferences could not be saved. Check that you are signed in and try again.");
+    } catch {
+      setPushSaveError("Preferences could not be saved. Check your connection and try again.");
+    } finally {
+      setIsApplyingPushChanges(false);
+    }
+  };
+
   return (
     <main className="min-h-[100dvh] bg-background text-white">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6">
@@ -985,13 +1068,13 @@ export default function TodaysAlerts() {
               </div>
               <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
                 <p className="text-xs uppercase tracking-[0.18em] text-white/45">Community</p>
-                <p className="mt-2 text-3xl font-bold text-white">{communityAlerts.length}</p>
+                <p className="mt-2 text-3xl font-bold text-white">{reportsError ? "Unavailable" : communityAlerts.length}</p>
                 <p className="mt-1 text-xs text-white/55">Unique reports today</p>
               </div>
               <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
                 <p className="text-xs uppercase tracking-[0.18em] text-white/45">Filtering</p>
-                <p className="mt-2 text-3xl font-bold text-white">{Math.max(allReports.length - communityAlerts.length, 0)}</p>
-                <p className="mt-1 text-xs text-white/55">Duplicate reports trimmed</p>
+                <p className="mt-2 text-3xl font-bold text-white">{reportsError ? "Unavailable" : Math.max(allReports.length - communityAlerts.length, 0)}</p>
+                <p className="mt-1 text-xs text-white/55">Reports omitted from today's view</p>
               </div>
             </div>
           </section>
@@ -1005,7 +1088,7 @@ export default function TodaysAlerts() {
               <p className="mt-2 text-sm text-white/60">{activeFilterLabel} · {activeGroupLabel} / newest first</p>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2 md:min-w-[320px]">
+            <div className="grid gap-3 md:min-w-[320px]">
               <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
                 <p className="text-xs uppercase tracking-[0.18em] text-white/45">Push notifications</p>
                 <div className="mt-2 flex items-center justify-between gap-3">
@@ -1033,15 +1116,75 @@ export default function TodaysAlerts() {
                       : "This browser does not support web notifications here."}
                 </p>
               </div>
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <p className="text-xs uppercase tracking-[0.18em] text-white/45">Live tracking</p>
-                <p className="mt-2 text-lg font-semibold text-white">How it works</p>
-                <p className="mt-1 text-xs text-white/55">
-                  The map polls live consist snapshots, then drops trains onto the network when active runs are detected.
-                </p>
-              </div>
             </div>
           </div>
+
+          {browserNotificationsEnabled && (
+            <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4">
+              <p className="text-xs uppercase tracking-[0.18em] text-white/45">Notification preferences</p>
+              <p className="mt-1 text-xs text-white/55">
+                Choose which alert types you want pushed. Favourite Set / Train Tracking requires sign-in and only alerts for your own favourites.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {PUSH_NOTIFICATION_CATEGORIES.map((category) => {
+                  const isChecked = pushCategories === null ? category.id !== "train-tracking" : pushCategories.includes(category.id);
+                  return (
+                    <button
+                      key={category.id}
+                      type="button"
+                      onClick={() => handleTogglePushCategory(category.id)}
+                      aria-pressed={isChecked}
+                      className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                        isChecked
+                          ? "border-emerald-400/25 bg-emerald-500/15 text-emerald-100"
+                          : "border-white/10 bg-white/5 text-white/45 hover:bg-white/10"
+                      }`}
+                    >
+                      {category.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <p className="mt-4 text-xs uppercase tracking-[0.18em] text-white/45">Lines &amp; services</p>
+              <p className="mt-1 text-xs text-white/55">
+                Only get pushed alerts for the lines you actually ride — untick anything you don&apos;t need.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {PUSH_LINE_GROUPS.map((group) => {
+                  const isChecked = pushLines === null || group.lines.every((line) => pushLines.includes(line));
+                  return (
+                    <button
+                      key={group.label}
+                      type="button"
+                      onClick={() => handleTogglePushLineGroup(group)}
+                      aria-pressed={isChecked}
+                      className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                        isChecked ? "" : "border-white/10 bg-white/5 text-white/45 hover:bg-white/10"
+                      }`}
+                      style={isChecked ? { borderColor: `${group.color}55`, backgroundColor: `${group.color}22`, color: group.color } : undefined}
+                    >
+                      {group.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => void handleApplyPushChanges()}
+                disabled={!hasPendingPushChanges || isApplyingPushChanges}
+                className={`mt-4 w-full rounded-full border px-4 py-2 text-sm font-semibold transition ${
+                  hasPendingPushChanges
+                    ? "border-blue-400/30 bg-blue-500/20 text-blue-100 hover:bg-blue-500/30"
+                    : "cursor-not-allowed border-white/10 bg-white/5 text-white/35"
+                }`}
+              >
+                {isApplyingPushChanges ? "Applying…" : hasPendingPushChanges ? "Apply changes" : "Changes saved"}
+              </button>
+              {pushSaveError && <p role="alert" className="mt-2 text-xs text-red-300">{pushSaveError}</p>}
+            </div>
+          )}
 
           <div className="mt-5 flex flex-wrap gap-2">
             {ALERT_FILTERS.map((filter) => {
@@ -1349,7 +1492,11 @@ export default function TodaysAlerts() {
             </div>
 
             <div className="space-y-3">
-              {communityAlerts.length === 0 ? (
+              {reportsError ? (
+                <div role="status" className="rounded-2xl border border-amber-300/20 bg-amber-300/5 p-5 text-sm text-amber-100/80">
+                  Community reports are unavailable right now. This does not mean there are no reports. Please try again later.
+                </div>
+              ) : communityAlerts.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-white/10 bg-white/5 p-5 text-sm text-white/55">
                   No unique community alerts for today yet.
                 </div>

@@ -1,3 +1,6 @@
+# Current Floot app, migrated to this PC on 20 October 2026.
+$selfHostStart='C:\Users\tyler\Documents\Codex\2026-10-20\i-w\work\transit-alert-selfhost\start.ps1'
+if(Test-Path -LiteralPath $selfHostStart){ & $selfHostStart; return }
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -129,3 +132,4 @@ $process = Start-Process `
 Set-Content -Path $pidPath -Value $process.Id -Encoding ASCII
 
 Write-Output "TransitAlert host started on http://localhost:$($HostConfig.Port)/ with PID $($process.Id)."
+

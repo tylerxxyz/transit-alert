@@ -150,17 +150,6 @@ function buildOfflineFallback(url: string, method: string): unknown {
     return undefined;
   }
 
-  if (url === "/api/reports") {
-    return [];
-  }
-
-  if (url === "/api/reports/stats") {
-    return {
-      alertsToday: 0,
-      riskyRoutes: [],
-    };
-  }
-
   if (url === "/api/healthz") {
     return {
       ok: false,

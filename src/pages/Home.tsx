@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { getApiUrl } from "@/lib/api-config";
 import { getCurrentVlineAllocation } from "@/lib/vline-allocation";
 import {
   Bell,
@@ -73,8 +74,9 @@ import {
   type UserPreferences,
   writeLocalPreferences,
 } from "@/lib/preferences";
-import { fetchMetroNotifyAlerts, isAlertCurrent, type MetroNotifyAlert } from "@/lib/todays-alerts";
-import { fetchStationDepartures, fetchJourneyPlan, fetchSurfaceStopDepartures } from "@/lib/timetable";
+import { fetchMetroNotifyAlerts, isAlertCurrent } from "@/lib/todays-alerts";
+import { alertMatchesJourney, journeyDisruptionGuidance } from "@/lib/journey-disruptions";
+import { fetchStationDepartures, fetchJourneyPlan, fetchSurfaceStopDepartures, fetchBusTrip, fetchTramTrip, fetchTrainTrip } from "@/lib/timetable";
 
 const TRAIN_BOARDING_HINTS: Record<string, { zone: string; reason: string }> = {
   "North Melbourne": {
@@ -165,6 +167,7 @@ type FleetTypeKey =
   | "n-class"
   | "sprinter"
   | "vlocity"
+  | "vlocity-standard-gauge"
   | "xpt"
   | "tangara"
   | "waratah-a"
@@ -298,9 +301,11 @@ const FLEET_TYPES: FleetTypeConfig[] = [
   { key: "siemens", label: "Siemens", emoji: "Train", total: 20 },
   { key: "edi-comeng", label: "EDI Comeng", emoji: "Train", total: 51 },
   { key: "alstom-comeng", label: "Alstom Comeng", emoji: "Train", total: 49 },
-  { key: "n-class", label: "N Class", emoji: "Train", total: 1 },
+  // Real fleet is N451-N474 (VICSIG) — see N_CLASS_CONSIST_PATTERN below.
+  { key: "n-class", label: "N Class", emoji: "Train", total: 24 },
   { key: "sprinter", label: "Sprinter", emoji: "Train", total: 1 },
-  { key: "vlocity", label: "VLocity", emoji: "Train", total: 25 },
+  { key: "vlocity", label: "VLocity (Broad Gauge)", emoji: "Train", total: 25 },
+  { key: "vlocity-standard-gauge", label: "VLocity (Standard Gauge)", emoji: "Train", total: 0 },
   { key: "xpt", label: "XPT", emoji: "Train", total: 1 },
   { key: "tangara", label: "Tangara (T Set)", emoji: "Train", total: 0 },
   { key: "waratah-a", label: "Waratah A Set", emoji: "Train", total: 0 },
@@ -329,7 +334,8 @@ const FLEET_FILTER_GROUPS: FleetFilterGroup[] = [
       { key: "alstom-comeng", label: "Alstom Comeng" },
       { key: "n-class", label: "N Class" },
       { key: "sprinter", label: "Sprinter" },
-      { key: "vlocity", label: "VLocity" },
+      { key: "vlocity", label: "VLocity (Broad Gauge)" },
+      { key: "vlocity-standard-gauge", label: "VLocity (Standard Gauge)" },
     ],
   },
   {
@@ -491,9 +497,48 @@ const PID_THEMES: PidThemeMode[] = ["dark", "light"];
 const VERSION_LOG: ChangelogEntry[] = [
   {
     version: TRANSITALERT_WEB_VERSION,
+    date: "17/09/2026",
+    notes: [
+      "Fixed a real map data bug on the Belgrave/Lilydale/Alamein lines: the shared Richmond-to-Burnley track was being cut down to just 2 points before jumping straight to each line's own branch data, drawing a long straight diagonal line across Richmond/East Richmond/Burnley instead of following the real curve. All three lines now follow their real GTFS shape through that corridor.",
+      "Fixed live buses never showing for a multi-route bus interchange bay (e.g. a shared bay serving several routes) — the live-vehicle matching only ever checked a single route label, which a shared bay never has, so it silently came back empty for exactly the stops that need it most.",
+      "Fixed departures sometimes linking to the wrong physical bus or tram: tapping a scheduled departure now matches PTV's own real run ID to the live feed first, instead of just picking whichever vehicle on that route happened to be nearest the stop (which could grab a different vehicle entirely when two were nearby).",
+      "Selecting a bus stop now focuses the map on exactly the live buses relevant to that stop's departures card, the same way selecting one specific bus already narrows the view.",
+      "Corrected 5 Sandringham line station markers (Ripponlea, Elsternwick, Gardenvale, North Brighton, Middle Brighton) that were up to ~46m off their real position, verified against OpenStreetMap's own station data.",
+      "Added 'Change here for' interchange summaries for Glen Huntly, McKinnon, Ormond, Gardenvale, and North Brighton with their real bus/tram/train connections, and fixed Caulfield and Gardenvale's platform-level direction text.",
+      "V/Line's single notification filter is now split into its 5 real corridors (Bairnsdale, Geelong, Ballarat, Bendigo, Seymour) matched against the disruption's actual resolved corridor, plus a dedicated Buses filter — instead of one catch-all V/Line toggle.",
+      "Notification preference changes (alert types and lines) now stage locally and only save when you tap Apply changes, instead of firing a save on every single tap.",
+      "Removed the 'Live tracking / How it works' card from the alerts page notification panel.",
+    ],
+  },
+  {
+    version: "1.25",
+    date: "16/09/2026",
+    notes: [
+      "Added a full 'Lines & Services' notification filter alongside the existing alert-type categories — riders can now untick specific lines (Frankston, Sandringham, V/Line, Buses, etc.) so pushes only arrive for what they actually ride, with related lines that run as one real corridor (e.g. Sunbury/Cranbourne/Pakenham via the Metro Tunnel, Werribee/Williamstown/Sandringham/Altona Loop, Mernda/Hurstbridge, Craigieburn/Upfield, and the Belgrave/Lilydale/Glen Waverley/Alamein group) combined into single toggles instead of forcing several to be kept in sync by hand. Each toggle is coloured with that line's real map colour.",
+      "Push notifications for a generic disruption (e.g. 'Delays up to 10 minutes due to extreme weather') now name the actual affected line in the message instead of reading as a systemwide alert with no context.",
+      "Every station's detail panel now shows a proper 'Metro station' / 'V/Line station' / 'Metro + V/Line station' badge next to its name instead of repeating that inside the details text underneath.",
+      "The Sandringham line now renders as two real parallel tracks on the map instead of one thick line, matching its actual double-track corridor.",
+      "Rolled the 'Change here for: ...' interchange summary out to more stations (Glen Huntly, McKinnon, Ormond, Gardenvale) with the real, hand-verified connections at each one, and fixed several stations (Caulfield, Malvern) that had wrong or generic line data in that summary.",
+      "Fixed Caulfield's Platform 1 and Platform 3 departure headers to describe the real direction and caveats (Platform 3 carries Metro Tunnel trains and V/Line services that pass through without picking up local passengers) instead of a raw destination list.",
+      "Fixed Huntingdale Station Bus Bay C showing every route through the interchange — it now only shows the 630 towards Elwood, the route that actually stops there.",
+      "Extended real GTFS-shaped bus route rendering across the network so bus routes follow actual roads instead of straight zig-zag lines between stops, and fixed the Footscray-to-Arden rail track to use its real shape instead of a straight line.",
+      "Fixed every one of the map's 22,578 generated bus stops showing a bare numeric ID instead of its real street-based name (e.g. 'Webb St/Princes Hwy').",
+      "Fixed a bus departure showing a garbled or wrong-direction destination label.",
+      "Added a live 'Updated Xs/mins ago' timestamp under a train's live position card so it's clear how fresh that GPS fix actually is.",
+      "Departure boards now keep a service visible for up to 2 minutes after it's left, up from 1, so a train you just missed doesn't vanish from the board immediately.",
+      "Added notification preferences (by alert type — cancellations, delays, trespassers, works, etc.) so riders can mute categories they don't need.",
+      "Fixed XT2 fleet history search to accept short set numbers (e.g. searching '7' now finds the real car number, 8107).",
+      "Fixed the Caulfield station marker not being clickable, reordered its multi-ring colours (blue outer, green middle, purple centre), added its real V/Line Platform 3 fact for Southern Cross services, and removed its outdated boarding-zone guide.",
+      "Made South Kensington's marker pink to match its real line colour.",
+      "Verified the journey planner's train 'lock-in' behaviour (knowing which specific train you've boarded) already works correctly end to end.",
+    ],
+  },
+  {
+    version: "1.0",
     date: "07/09/2026",
     notes: [
       "TransitAlert 1.0: the journey planner, live alerts, and push notifications have all been through a full pass of real-data verification and are now considered production-ready.",
+      "Release work also included real-data fixes across trains, trams, buses, and alerts, plus the About page and search-engine metadata.",
       "Fixed a real safety-relevant bug where the journey planner's 'next service' suggestion for a train leg could recommend a service heading the opposite direction — e.g. an Ormond to Glen Huntly trip could suggest an outbound Frankston-line train instead of a city-bound one. Departure matching now checks the actual station order on the line, not just the route name.",
       "Train legs in the journey planner — both the map line and the text leg cards — now use that line's real colour (e.g. Frankston green, Sandringham pink) instead of a generic blue. Tram and bus legs use their own real mode colours the same way.",
       "Live 'take this service' and 'next service' departure times in the journey planner now show a live-updating 'in X mins' countdown next to the clock time.",
@@ -505,7 +550,7 @@ const VERSION_LOG: ChangelogEntry[] = [
       "Added a dedicated 'Police request' alert filter, split out from Trespasser incidents so the two can be filtered separately.",
       "Fixed push notification links opening a 'Detour Ahead' 404 page instead of the alerts screen.",
       "TransitAlert now sends a push notification whenever a new version is released, summarising what changed.",
-      "Journey planner was rebuilt from scratch on real GTFS data across every mode — trains, V/Line, trams, and buses — instead of a handful of hardcoded example routes, so any real trip across the network can now be planned properly.",
+      "Journey planning uses real GTFS data across trains, V/Line, trams, and buses, so trips can be planned across the network.",
       "Fixed a bug that silently excluded every train route from journey planning (a GTFS route ID format collided with internal path-finding logic), which had been forcing bus-only routes even when a direct train was faster.",
       "Metro Tunnel journeys now show as one seamless leg end to end instead of a fake 'change trains' stop at Anzac or Town Hall — the schedule splits the TDN there, but it's the same physical train, and the planner now knows that.",
       "The journey map now draws each leg of a trip as its own line — train, tram, bus, and walking each get their own colour and style — instead of one flat line straight through every stop that made mixed-mode trips look broken.",
@@ -553,6 +598,128 @@ const VERSION_LOG: ChangelogEntry[] = [
       "Mobile login and account surfaces were tightened up with smaller spacing, lighter cards, and less cramped controls on narrow screens.",
       "Admin account notes now describe the real server allowlist instead of older Netlify wording.",
       "Guest guardrails, account messaging, and release board copy remain aligned with the public guest launch.",
+    ],
+  },
+  {
+    version: "0.92",
+    date: "21/07/2026",
+    notes: [
+      "Connected station departure boards to verified schedule data and added bus-stop departures.",
+      "Bound timetable feed requests so slow upstream responses do not hold up the app.",
+    ],
+  },
+  {
+    version: "0.91",
+    date: "19/07/2026",
+    notes: [
+      "Improved real-data accuracy across trains, buses, and trams, including live vehicles on the map and mixed-mode routing.",
+      "Removed synthetic live transit data and improved live train tracking on iPhone.",
+      "Improved guest access to the live map and fleet board, mobile map layout, and notifications.",
+    ],
+  },
+  {
+    version: "0.90",
+    date: "19/07/2026",
+    notes: [
+      "Released a guest version with public live train tracking and fleet information.",
+      "Improved account sessions and the public map experience across deployments.",
+    ],
+  },
+  {
+    version: "Development update",
+    date: "27/06/2026",
+    notes: [
+      "Improved GitHub Pages and Render deployment workflows, including the app's split deployment setup.",
+    ],
+  },
+  {
+    version: "Development update",
+    date: "15/06/2026",
+    notes: [
+      "Refined alert-corridor labels to make transport disruption information clearer.",
+    ],
+  },
+  {
+    version: "Development update",
+    date: "14/06/2026",
+    notes: [
+      "Polished map interchanges and fleet views across the app.",
+    ],
+  },
+  {
+    version: "Development update",
+    date: "12/06/2026",
+    notes: [
+      "Polished disruption alerts and improved how replacement buses appear on the map.",
+    ],
+  },
+  {
+    version: "Development update",
+    date: "11/06/2026",
+    notes: [
+      "Improved V/Line journey labels and journey alerts, and added a clearer fleet board for mobile.",
+      "Expanded fleet tracking to cover XPT services and refined fleet filters and station markers.",
+      "Expanded the PID Studio for inspecting and refining station departure displays.",
+    ],
+  },
+  {
+    version: "Development update",
+    date: "03/06/2026",
+    notes: [
+      "Improved map status messaging and refined shared transport-mode and reporting colours.",
+    ],
+  },
+  {
+    version: "Development update",
+    date: "20/05/2026",
+    notes: [
+      "Added a leaner iOS map-rendering mode to help the map run smoothly on mobile devices.",
+    ],
+  },
+  {
+    version: "Development update",
+    date: "19/05/2026",
+    notes: [
+      "Added mobile crash diagnostics and prioritised train overlays for clearer, steadier map rendering.",
+    ],
+  },
+  {
+    version: "Development update",
+    date: "18/05/2026",
+    notes: [
+      "Clarified the Comeng fleet variants and reduced the station-marker workload on mobile.",
+    ],
+  },
+  {
+    version: "Development update",
+    date: "16/05/2026",
+    notes: [
+      "Aligned station markers with the rendered tracks and removed outdated loop overlays from the map.",
+    ],
+  },
+  {
+    version: "Development update",
+    date: "15/05/2026",
+    notes: [
+      "Improved mobile map performance and accessibility, including a map legend and lighter station markers on iPhone.",
+      "Refined station boards and markers across the Sunbury, Craigieburn, and northern corridors, and improved shared-track geometry through the city and Burnley loops.",
+      "Added and refined corridor overlays around Sunshine and V/Line junctions, and improved service abbreviations on public boards.",
+    ],
+  },
+  {
+    version: "Development update",
+    date: "14/05/2026",
+    notes: [
+      "Added admin controls for managing tester access during the beta period.",
+    ],
+  },
+  {
+    version: "Development update",
+    date: "13/05/2026",
+    notes: [
+      "Strengthened account security and clarified TransitAlert's independent branding.",
+      "Improved the mobile map, account handling, and database support for the Render deployment.",
+      "Made city-loop map markers easier to select on touch screens.",
     ],
   },
   {
@@ -647,6 +814,50 @@ const VERSION_LOG: ChangelogEntry[] = [
     ],
   },
   {
+    version: "Development update",
+    date: "25/04/2026",
+    notes: [
+      "Refactored the app's transit-data flow and interface to make core map and service features easier to maintain.",
+    ],
+  },
+  {
+    version: "Development update",
+    date: "22/04/2026",
+    notes: [
+      "Refined the map interface and simplified account roles, with several stability fixes to the app's update and rendering flows.",
+    ],
+  },
+  {
+    version: "Development update",
+    date: "20/04/2026",
+    notes: [
+      "Added station platform departure previews and improved the station detail panel alongside the journey planner.",
+      "Built out live metro train tracking, map interactions, transport-mode filters, and editable map markers.",
+      "Improved the mobile map layout and touch controls for navigating and dragging the map.",
+    ],
+  },
+  {
+    version: "Development update",
+    date: "19/04/2026",
+    notes: [
+      "Brought together the mobile journey planner, account access, live tracking, service alerts, and transport filters.",
+    ],
+  },
+  {
+    version: "Development update",
+    date: "14/04/2026",
+    notes: [
+      "Worked on initial train-route configuration and early app deployment setup.",
+    ],
+  },
+  {
+    version: "Development update",
+    date: "13/04/2026",
+    notes: [
+      "TransitAlert development began with the initial app structure and project setup.",
+    ],
+  },
+  {
     version: "V0.67",
     date: "21/06/2025",
     notes: [
@@ -674,16 +885,16 @@ const TRANSITALERT_SYSTEM_NOTES = [
 
 const VERSION_HIGHLIGHT_CARDS = [
   {
-    title: "Real, verified journey planning",
-    body: "Every mode — train, tram, bus, V/Line — planned end to end on real GTFS data, with correct-direction departures, real per-line colours, and a live 'in X mins' countdown.",
+    title: "Fixed the wrong-vehicle bug",
+    body: "Tapping a departure now matches PTV's real run ID instead of guessing the nearest same-route vehicle, and multi-route bus bays finally show their live buses.",
   },
   {
-    title: "Alerts you can trust",
-    body: "Fixed dead 'Details here' links, cut-off titles, duplicate cards, and alerts disappearing mid-disruption — plus a new Police request filter alongside Trespassers.",
+    title: "Real train track fixed",
+    body: "The Belgrave/Lilydale/Alamein lines no longer cut a straight diagonal line through Richmond/Burnley — they follow the real curve, and 5 Sandringham stations are now correctly placed.",
   },
   {
-    title: "Deeper train tracking",
-    body: "The Train Tracker can now show up to two previous and two next linked services for the same physical train, whenever the timetable confirms the full chain.",
+    title: "V/Line by corridor, faster preferences",
+    body: "V/Line notifications are now 5 real corridors (Bairnsdale, Geelong, Ballarat, Bendigo, Seymour) instead of one toggle, and preference changes only save when you hit Apply.",
   },
 ] as const;
 
@@ -720,16 +931,6 @@ function getJourneyCorridorLabels(route: Station[]) {
   return PLANNER_LINES
     .filter((line) => line.stations.filter((station) => routeNames.has(station.name)).length >= 2)
     .map((line) => line.name);
-}
-
-function metroAlertMatchesJourneyCorridor(alert: MetroNotifyAlert, corridorLabels: string[]) {
-  if (corridorLabels.length === 0) return false;
-  const searchable = `${alert.title} ${alert.summary} ${alert.lines.join(" ")}`.toLowerCase();
-  return corridorLabels.some((label) => {
-    const lineLabel = `${label} line`.toLowerCase();
-    const rawLabel = label.toLowerCase();
-    return searchable.includes(lineLabel) || searchable.includes(rawLabel);
-  });
 }
 
 const STATUS_STYLES: Record<FleetTripStatus, string> = {
@@ -778,8 +979,23 @@ function getRegionalFleetKey(vehicle: LiveTrain): FleetTypeKey {
   // VLocity service to those towns (real consist "V2117"/"V1296"/"V1299",
   // confirmed live) as N Class before the VLocity check below ever ran.
   if (family.includes("n class") || N_CLASS_CONSIST_PATTERN.test(joined) || /n\s*class|n-?set|\bloco\b|locomotive/.test(joined)) return "n-class";
-  if (family.includes("vlocity") || /\bv\d{3,4}\b/.test(joined)) return "vlocity";
-  return "vlocity";
+  if (family.includes("vlocity") || /\bv\d{3,4}\b/.test(joined)) return getVlocityGaugeFleetKey(vehicle);
+  return getVlocityGaugeFleetKey(vehicle);
+}
+
+// V/Line's network is broad gauge (1600mm) throughout except the Albury
+// line, converted to standard gauge (1435mm) in 1962 for through running to
+// Sydney — a small, dedicated sub-fleet of VLocity sets runs standard gauge
+// on that line specifically, the rest of the VLocity fleet is broad gauge.
+// Destination text can't identify this: an inbound Albury working reports
+// the same generic "Southern Cross" text every other inbound V/Line service
+// does (confirmed live: TDN 8620, consist V1195, destination "Southern
+// Cross" — no mention of Albury anywhere in the text fields). The route
+// code "ABY" in tripId survives regardless of direction (confirmed
+// live/static: real trip_id "01-ABY--2-T0-8620", real route_id
+// "aus:vic:vic-01-ABY:" = "Albury - Melbourne Via Seymour").
+function getVlocityGaugeFleetKey(vehicle: LiveTrain): FleetTypeKey {
+  return /-ABY--/i.test(vehicle.tripId ?? "") ? "vlocity-standard-gauge" : "vlocity";
 }
 
 // Real Melbourne suburban carriage number ranges (source: vicsig.net/suburban/fleet):
@@ -828,7 +1044,11 @@ function classifyComengMotorNumbers(motorNumbers: number[]): "alstom-comeng" | "
 }
 
 function inferFleetTypeKeyFromConsist(vehicle: LiveTrain): FleetTypeKey | null {
-  const motorNumbers = Array.from(vehicle.consist.matchAll(/(\d+)M\b/gi)).map((match) => Number(match[1]));
+  // X'Trapolis 2.0 and HCMT car/set numbers can appear as a bare number with
+  // no M/T letter at all, unlike Comeng/Siemens/X'Trapolis 100 which always
+  // carry the suffix — matching the suffix as optional covers both without
+  // missing either real-world format.
+  const motorNumbers = Array.from(vehicle.consist.matchAll(/(\d+)[MT]?\b/gi)).map((match) => Number(match[1]));
   if (motorNumbers.some((n) => n >= 9000 && n <= 9999)) return "hcmt";
   if (motorNumbers.some((n) => n >= 8100 && n <= 8699)) return "xtrapolis2";
   if (motorNumbers.some((n) => (n >= 1 && n <= 288) || (n >= 851 && n <= 985))) return "xtrapolis";
@@ -879,8 +1099,29 @@ function getHcmtSetLabel(vehicle: LiveTrain) {
   return match?.[1] ? `HCMT Set ${match[1]}` : "HCMT Set";
 }
 
+// X'Trapolis 2.0's raw consist string lists every car in the 6-car unit
+// (e.g. "8105-8205-8305-8405-8505-8605") rather than a single set id —
+// showing that whole string is the "long car number consist" that's harder
+// to read than the real set number the operator uses. Each physical set N
+// is cars 8100+N, 8200+N, ..., 8600+N (mirrors getXtrapolis2SetNumber in
+// api/_lib/fleet-tracking.js), so any one car number maps back to it.
+function getXtrapolis2SetLabel(vehicle: LiveTrain) {
+  const carNumbers = Array.from(vehicle.consist.matchAll(/(\d+)[MT]?\b/gi)).map((match) => Number(match[1]));
+  const units = new Set<number>();
+  for (const n of carNumbers) {
+    const hundreds = Math.floor(n / 100);
+    const unit = n % 100;
+    if (hundreds >= 81 && hundreds <= 86 && unit >= 1 && unit <= 50) units.add(unit);
+  }
+  if (units.size === 0) return vehicle.consist || vehicle.tdn || "Set TBC";
+  return `XT2 Set ${Array.from(units)
+    .map((u) => String(u).padStart(2, "0"))
+    .join(" + ")}`;
+}
+
 function getFleetSetDisplay(vehicle: LiveTrain, fleet: FleetTypeKey) {
   if (fleet === "hcmt") return getHcmtSetLabel(vehicle);
+  if (fleet === "xtrapolis2") return getXtrapolis2SetLabel(vehicle);
   if (fleet === "n-class" || fleet === "sprinter") {
     // Real reporting mark (e.g. "N453") when the live feed has one — the
     // fleet name is already shown right next to this and repeating it here
@@ -893,7 +1134,7 @@ function getFleetSetDisplay(vehicle: LiveTrain, fleet: FleetTypeKey) {
       ? consist
       : `${getRegionalFleetCarLength(vehicle)} ${getRegionalFleetTrainFamily(vehicle)}`;
   }
-  if (fleet === "vlocity" || fleet === "xpt") {
+  if (fleet === "vlocity" || fleet === "vlocity-standard-gauge" || fleet === "xpt") {
     return `${getRegionalFleetCarLength(vehicle)} ${getRegionalFleetTrainFamily(vehicle)}`;
   }
   return vehicle.consist || vehicle.tdn || "Set TBC";
@@ -1191,7 +1432,7 @@ function getFleetTripSortScore(trip: FleetTrip) {
   const seen = trip.updatedAt ? new Date(trip.updatedAt).getTime() : 0;
   const recencyScore = Number.isFinite(seen) ? seen : 0;
   const activeBonus = trip.status === "running" ? 10_000_000_000_000 : 0;
-  const regionalBonus = trip.fleet === "xpt" || trip.fleet === "vlocity" || trip.fleet === "n-class" || trip.fleet === "sprinter" ? 5_000 : 0;
+  const regionalBonus = trip.fleet === "xpt" || trip.fleet === "vlocity" || trip.fleet === "vlocity-standard-gauge" || trip.fleet === "n-class" || trip.fleet === "sprinter" ? 5_000 : 0;
   return activeBonus + recencyScore + regionalBonus;
 }
 
@@ -1254,6 +1495,18 @@ function formatRelativeMinutes(targetIso: string): string {
   const hours = Math.floor(diffMinutes / 60);
   const mins = diffMinutes % 60;
   return mins > 0 ? `in ${hours}h ${mins}m` : `in ${hours}h`;
+}
+
+// Bus/tram departures (SurfaceStopDeparturesPayload) never carry a
+// delaySeconds field — only VerifiedDeparture (trains) does — so deriving
+// delay from the real scheduledAt vs expectedAt gap works for both instead
+// of silently reporting every bus/tram as "On time" regardless of its real
+// live delay (confirmed live: a real Route 626 running 4 minutes late per
+// PTV's own data was shown here as "On time").
+function getDepartureDelayLabel(departure: { status: string; scheduledAt: string; expectedAt: string }): string {
+  if (departure.status === "cancelled") return "Cancelled";
+  const delayMinutes = Math.round((new Date(departure.expectedAt).getTime() - new Date(departure.scheduledAt).getTime()) / 60000);
+  return delayMinutes > 1 ? `${delayMinutes} min late` : "On time";
 }
 
 function journeyLegsOrigin(display: JourneyDisplay) {
@@ -1571,6 +1824,47 @@ function DockedPanelSheet({ isOpen, onToggle, eyebrow, title, summary, fullPage 
   );
 }
 
+function normaliseStopNameForMatch(value: string) {
+  return value.replace(/\s+(railway\s+)?station$/i, "").trim().toLowerCase();
+}
+
+// A leg's departure card only ever shows when the vehicle LEAVES the
+// boarding stop — riders actually want to know when they'll ARRIVE at the
+// leg's destination stop, which needs this specific run's own real
+// stopping pattern (the same per-stop data the map's vehicle detail panel
+// already uses), not a guessed duration. Its own component so the
+// per-departure fetch follows React's rules of hooks regardless of how many
+// departure cards are showing. Bus/tram stops carry their real time as
+// expectedAt; train stops carry it as expectedArrivalAt — the fetch and the
+// field name both depend on which of the three real trip endpoints this is.
+function JourneyArrivalTime({ mode, tripId, destinationStopName }: { mode: "bus" | "tram" | "train"; tripId: string; destinationStopName: string }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ["journey-arrival", mode, tripId],
+    queryFn: () => (mode === "train" ? fetchTrainTrip(tripId) : mode === "tram" ? fetchTramTrip(tripId) : fetchBusTrip(tripId)),
+    staleTime: 20_000,
+    retry: 1,
+  });
+
+  const targetKey = normaliseStopNameForMatch(destinationStopName);
+  const arrivalStop = data?.stops.find((stop) => normaliseStopNameForMatch(stop.name) === targetKey);
+  const arrivalTime = arrivalStop
+    ? ("expectedArrivalAt" in arrivalStop ? arrivalStop.expectedArrivalAt : arrivalStop.expectedAt)
+    : undefined;
+
+  if (isLoading) {
+    return <p className="mt-1 text-xs text-white/45">Checking arrival time…</p>;
+  }
+  if (!arrivalTime) {
+    return null;
+  }
+
+  return (
+    <p className="mt-1 text-xs font-semibold text-blue-100">
+      Arrive ~{new Date(arrivalTime).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} at {destinationStopName}
+    </p>
+  );
+}
+
 export default function Home() {
   const [, setLocation] = useLocation();
   const isMobile = useIsMobile();
@@ -1625,7 +1919,7 @@ export default function Home() {
   });
   const sydneyLiveBuses = sydneyTransitData?.buses ?? [];
   const sydneyLiveTrams = sydneyTransitData?.trams ?? [];
-  const { data: metroJourneyAlerts = [] } = useQuery({
+  const { data: metroJourneyAlerts = [], isError: journeyAlertsError, dataUpdatedAt: journeyAlertsUpdatedAt } = useQuery({
     queryKey: ["/api/metro-notify/alerts", "journey-brief"],
     queryFn: fetchMetroNotifyAlerts,
     retry: false,
@@ -1667,6 +1961,12 @@ export default function Home() {
   const [currentLocationOrigin, setCurrentLocationOrigin] = useState<string | null>(null);
   const [currentLocationCoords, setCurrentLocationCoords] = useState<[number, number] | null>(null);
   const [journeyStartedAt, setJourneyStartedAt] = useState<string | null>(null);
+  // How long the walk to the first boarding stop actually takes, from the
+  // plan the server just computed. Without this, the "next train" board for
+  // that first leg checks departures against the current moment — which
+  // recommends trains you can't actually catch if you're still a few
+  // minutes' walk from the platform.
+  const [journeyOriginWalkSeconds, setJourneyOriginWalkSeconds] = useState(0);
   const activeJourneyBusRoutes = useMemo(() => {
     if (!journeyStartedAt || !journeyDisplay) return [];
     return Array.from(new Set(
@@ -1683,6 +1983,10 @@ export default function Home() {
   const [originPickerMessage, setOriginPickerMessage] = useState("");
   const [isOriginPickerOpen, setIsOriginPickerOpen] = useState(false);
   const [originSearch, setOriginSearch] = useState("");
+  // Native <datalist> suggestions don't reliably respond to a tap on mobile
+  // browsers (a well-known cross-browser gap, especially iOS Safari) — a
+  // real button list guarantees the destination actually gets set on tap.
+  const [isDestinationDropdownOpen, setIsDestinationDropdownOpen] = useState(false);
   const [journeyPlannerMessage, setJourneyPlannerMessage] = useState("");
   const [adminMessage, setAdminMessage] = useState("");
   const [adminSelectedStation, setAdminSelectedStation] = useState("Flinders Street");
@@ -1798,6 +2102,11 @@ export default function Home() {
     return [...seen.values()];
   }, []);
   const stationOptions = useMemo(() => uniqueStations.map((station) => station.name).sort(), [uniqueStations]);
+  const destinationSuggestions = useMemo(() => {
+    const query = journeyDestination.trim().toLowerCase();
+    if (!query) return [];
+    return stationOptions.filter((name) => name.toLowerCase().includes(query)).slice(0, 8);
+  }, [journeyDestination, stationOptions]);
   const stationByName = useMemo(
     () => new Map(uniqueStations.map((station) => [station.name, station])),
     [uniqueStations],
@@ -1820,7 +2129,10 @@ export default function Home() {
   const journeyMatchingTrainDepartures = useMemo(() => {
     if (!journeyTrainLeg || !journeyTrainDepartures?.departures) return [];
     const routeText = journeyTrainLeg.title.toLowerCase();
-    const now = Date.now() - 60_000;
+    // A train departing before you've actually walked to the platform isn't
+    // catchable — shift the "earliest usable departure" cutoff forward by
+    // that walk time instead of always anchoring to right now.
+    const now = Date.now() - 60_000 + journeyOriginWalkSeconds * 1000;
 
     // Matching on line name alone isn't enough — a line runs both directions,
     // so "Frankston line" departures from a station include trains heading
@@ -1874,7 +2186,7 @@ export default function Home() {
       })
       .sort((left, right) => new Date(left.expectedAt || left.scheduledAt).getTime() - new Date(right.expectedAt || right.scheduledAt).getTime())
       .slice(0, 2);
-  }, [journeyTrainDepartures, journeyTrainLeg]);
+  }, [journeyTrainDepartures, journeyTrainLeg, journeyOriginWalkSeconds]);
   const journeySurfaceLeg = journeyDisplay?.legs.find((leg) => leg.mode === "bus" || leg.mode === "tram") ?? null;
   const journeySurfaceLegStop = journeySurfaceLeg
     ? journeyRoute.find((station) => station.name === journeySurfaceLeg.from) ?? null
@@ -2024,6 +2336,78 @@ export default function Home() {
       upcomingSoon: trips.filter((trip) => trip.status === "upcoming").length,
     };
   }, [fleetTripsToDisplay]);
+  // A set that isn't currently running won't show up in fleetTripsToDisplay
+  // (that's live-feed only). When the live search comes up empty and the
+  // query looks like it's naming a specific set, fall back to the logged
+  // sighting history so "where was it last / what did it run today" still
+  // has an answer instead of just "no results".
+  const trimmedFleetSearchQuery = fleetSearchQuery.trim();
+  const shouldLookupFleetHistory = trimmedFleetSearchQuery.length > 0 && fleetTripsToDisplay.length === 0;
+  const fleetHistoryQuery = useQuery({
+    queryKey: ["/api/consist", trimmedFleetSearchQuery],
+    queryFn: async () => {
+      const response = await fetch(getApiUrl(`/api/consist/${encodeURIComponent(trimmedFleetSearchQuery)}`));
+      if (!response.ok) throw new Error(`Lookup failed (${response.status})`);
+      return (await response.json()) as {
+        consist: string;
+        status: "active" | "idle" | "finished";
+        last_seen_at?: string | null;
+        last_known_position?: { lat: number; lng: number } | null;
+        last_service?: {
+          consist: string;
+          tdn: string | null;
+          line: string | null;
+          destination: string | null;
+          trainType: string | null;
+          firstSeenAt: string;
+          lastSeenAt: string;
+        } | null;
+        todays_services?: Array<{
+          consist: string;
+          tdn: string | null;
+          line: string | null;
+          destination: string | null;
+          firstSeenAt: string;
+          lastSeenAt: string;
+        }>;
+      };
+    },
+    enabled: shouldLookupFleetHistory,
+    staleTime: 30_000,
+  });
+  // Same idea as fleetHistoryQuery, but for browsing a whole fleet TYPE (e.g.
+  // "X'Trapolis 2.0") rather than one specific set number — useful for fleets
+  // that currently have very few sets, where "not running right now" is the
+  // common case, not the exception.
+  const shouldLookupFleetTypeHistory = trimmedFleetSearchQuery.length === 0 && selectedFleetType !== "all";
+  const fleetTypeHistoryQuery = useQuery({
+    queryKey: ["/api/fleet-type", selectedFleetType],
+    queryFn: async () => {
+      const response = await fetch(getApiUrl(`/api/fleet-type/${encodeURIComponent(selectedFleetType)}`));
+      if (!response.ok) throw new Error(`Lookup failed (${response.status})`);
+      return (await response.json()) as {
+        fleetType: string;
+        sets: Array<{
+          setNumber: string;
+          inService: boolean;
+          lastSeenAt: string;
+          lastKnownPosition: { lat: number; lng: number } | null;
+          lastService: {
+            consist: string;
+            tdn: string | null;
+            line: string | null;
+            destination: string | null;
+            trainType: string | null;
+            firstSeenAt: string;
+            lastSeenAt: string;
+          };
+          todaysServiceCount: number;
+        }>;
+      };
+    },
+    enabled: shouldLookupFleetTypeHistory,
+    staleTime: 30_000,
+  });
   const pidDepartures = useMemo(() => getStationDepartureBoard(pidStation), [pidStation]);
   const pidPlatforms = useMemo(() => getGeneratedPidPlatforms(pidStation, pidDepartures), [pidStation, pidDepartures]);
   const pidSelectedDeparture = useMemo(
@@ -2087,21 +2471,19 @@ export default function Home() {
   const journeyDisruptionBrief = useMemo(() => {
     if (journeyRoute.length < 2) return null;
 
-    const corridorLabels = getJourneyCorridorLabels(journeyRoute).slice(0, 3);
+    const corridorLabels = getJourneyCorridorLabels(journeyRoute);
     const corridorText = corridorLabels.length > 0 ? corridorLabels.join(", ") : "your planned corridor";
     const matchingAlerts = metroJourneyAlerts
-      .filter((alert) => isAlertCurrent(alert) && metroAlertMatchesJourneyCorridor(alert, corridorLabels))
-      .slice(0, 2);
+      .filter((alert) => isAlertCurrent(alert) && alertMatchesJourney(alert, journeyDisplay?.legs ?? []));
+    const alertsFresh = !journeyAlertsError && journeyAlertsUpdatedAt > 0 && Date.now() - journeyAlertsUpdatedAt < 180_000;
 
     return {
-      title: `${corridorText} alert check`,
-      summary: matchingAlerts.length > 0
-        ? `Live disruptions are currently matching ${corridorText}. Check the detail before you travel.`
-        : `TransitAlert treats alerts on ${corridorText} as journey-relevant, then explains them as delays, track work, service changes, or incidents so the next step is clearer before you travel.`,
+      title: matchingAlerts.length > 0 ? `${matchingAlerts.length} relevant service notice${matchingAlerts.length === 1 ? "" : "s"}` : `${corridorText} alert check`,
+      summary: journeyDisruptionGuidance(matchingAlerts, alertsFresh),
       terms: JOURNEY_DISRUPTION_TERMS,
       matchingAlerts,
     };
-  }, [journeyRoute, metroJourneyAlerts]);
+  }, [journeyRoute, journeyDisplay, metroJourneyAlerts, journeyAlertsError, journeyAlertsUpdatedAt]);
   const openLiveTrainOnMap = useCallback((trip: FleetTrip) => {
     setFocusedVehicleKey(trip.focusKey);
     setActiveTab("map");
@@ -2121,6 +2503,22 @@ export default function Home() {
     setActiveTab("map");
     setIsPlannerOpen(true);
   }, [accountPreferences]);
+
+  // Attaching used to only be reachable from the Fleet Tracker's own trip
+  // rows (a real FleetTrip, full of fields a journey-planner departure card
+  // doesn't have) — this is the same attach, taking just the two real
+  // things a departure card actually has: its focus key and a label to
+  // show. Lets any departure card "lock on" in one tap, not just Fleet
+  // Tracker rows.
+  const attachJourneyServiceDirect = useCallback((focusKey: string, label: string) => {
+    setAttachedJourneyServiceKey(focusKey);
+    setAttachedJourneyServiceLabel(label);
+    setJourneyStartedAt((current) => current ?? new Date().toISOString());
+    setFocusedVehicleKey(focusKey);
+    setActiveTab("map");
+    setIsPlannerOpen(false);
+    setIsSidebarOpen(false);
+  }, []);
 
   const finishJourney = useCallback(() => {
     setJourneyRoute([]);
@@ -2416,6 +2814,7 @@ export default function Home() {
   const computeJourneyRoute = async () => {
     try {
       setJourneyPlannerMessage("Planning your journey against the live network…");
+      setJourneyOriginWalkSeconds(0);
       const trimmedDestination = journeyDestination.trim();
       const destination =
         stationByName.get(trimmedDestination) ??
@@ -2482,6 +2881,7 @@ export default function Home() {
         originLng,
         destinationName: destination?.name ?? trimmedDestination,
       });
+      setJourneyOriginWalkSeconds(plan.walkFromOriginSeconds ?? 0);
 
       if (!plan.found) {
         const fallbackOrigin = resolvedOrigin ?? { name: trimmedOrigin, position: DEFAULT_FALLBACK_COORDS };
@@ -2541,9 +2941,15 @@ export default function Home() {
       const legSegments: JourneyLegSegment[] = [];
       let stopCursor = 0;
       for (const leg of plan.legs ?? []) {
-        const segmentPositions = routeStations
-          .slice(stopCursor, stopCursor + leg.stopsCount + 1)
-          .map((station): [number, number] => station.position);
+        // A bus leg with real GTFS shape geometry draws the actual road it
+        // drives, not a straight line jumping from stop to stop — every
+        // other mode (and any bus route whose shape wasn't found) still
+        // falls back to the stop-to-stop line below.
+        const segmentPositions = leg.shapePositions && leg.shapePositions.length >= 2
+          ? leg.shapePositions
+          : routeStations
+              .slice(stopCursor, stopCursor + leg.stopsCount + 1)
+              .map((station): [number, number] => station.position);
         if (segmentPositions.length >= 2) {
           legSegments.push({ mode: leg.mode, positions: segmentPositions, routeLabel: leg.routeLabel });
         }
@@ -3400,15 +3806,38 @@ export default function Home() {
                     </button>
                   </label>
 
-                  <label className="block">
+                  <label className="relative block">
                     <span className="mb-1 block text-xs font-medium text-white/60">To</span>
                     <input
                       value={journeyDestination}
-                      onChange={(event) => setJourneyDestination(event.target.value)}
-                      list="station-options"
+                      onChange={(event) => {
+                        setJourneyDestination(event.target.value);
+                        setIsDestinationDropdownOpen(true);
+                      }}
+                      onFocus={() => setIsDestinationDropdownOpen(true)}
+                      onBlur={() => setTimeout(() => setIsDestinationDropdownOpen(false), 150)}
                       placeholder="Where to?"
+                      autoComplete="off"
                       className="w-full rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-base text-white outline-none transition focus:border-primary"
                     />
+                    {isDestinationDropdownOpen && destinationSuggestions.length > 0 && (
+                      <div className="absolute inset-x-0 top-full z-20 mt-1 max-h-64 overflow-y-auto rounded-2xl border border-white/10 bg-slate-900 shadow-2xl">
+                        {destinationSuggestions.map((name) => (
+                          <button
+                            key={name}
+                            type="button"
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => {
+                              setJourneyDestination(name);
+                              setIsDestinationDropdownOpen(false);
+                            }}
+                            className="block w-full px-4 py-2.5 text-left text-sm text-white/85 transition hover:bg-white/10"
+                          >
+                            {name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </label>
                 </div>
 
@@ -3427,11 +3856,6 @@ export default function Home() {
                   </button>
                 </div>
 
-                <datalist id="station-options">
-                  {stationOptions.map((name) => (
-                    <option key={name} value={name} />
-                  ))}
-                </datalist>
 
                 {(journeyRoute.length > 0 || journeyPlannerMessage) && <div className="rounded-[1.75rem] border border-white/10 bg-slate-900 p-4 text-sm text-white/75">
                   <div className="flex items-center justify-between gap-3">
@@ -3482,10 +3906,11 @@ export default function Home() {
                         <div className="mt-3 grid gap-2">
                           {journeyDisruptionBrief.matchingAlerts.map((alert) => (
                             <div key={alert.id} className="rounded-2xl border border-amber-200/15 bg-black/20 px-3 py-2">
-                              <p className="text-sm font-semibold text-amber-50">{alert.title || "Live service disruption"}</p>
+                              <p className="text-sm font-semibold text-amber-50">{alert.title || "Service notice"}</p>
                               {alert.summary && (
                                 <p className="mt-1 line-clamp-2 text-xs leading-5 text-amber-50/75">{alert.summary}</p>
                               )}
+                              <a href={alert.url && /^https?:\/\//i.test(alert.url) ? alert.url : "https://transport.vic.gov.au/disruptions/disruptions-information"} target="_blank" rel="noopener noreferrer" className="mt-2 inline-block text-xs font-semibold text-amber-100 underline">Official travel and replacement stop details</a>
                             </div>
                           ))}
                         </div>
@@ -3641,13 +4066,40 @@ export default function Home() {
                         <span>{journeyOrigin}</span><ChevronDown className="h-4 w-4" />
                       </button>
                     </label>
-                    <label className="grid gap-2 text-sm text-white/65">
+                    <label className="relative grid gap-2 text-sm text-white/65">
                       To
-                      <input value={journeyDestination} onChange={(event) => setJourneyDestination(event.target.value)} list="station-options" className="rounded-2xl border border-white/10 bg-slate-950 px-4 py-3 text-base text-white outline-none focus:border-blue-400" />
+                      <input
+                        value={journeyDestination}
+                        onChange={(event) => {
+                          setJourneyDestination(event.target.value);
+                          setIsDestinationDropdownOpen(true);
+                        }}
+                        onFocus={() => setIsDestinationDropdownOpen(true)}
+                        onBlur={() => setTimeout(() => setIsDestinationDropdownOpen(false), 150)}
+                        autoComplete="off"
+                        className="rounded-2xl border border-white/10 bg-slate-950 px-4 py-3 text-base text-white outline-none focus:border-blue-400"
+                      />
+                      {isDestinationDropdownOpen && destinationSuggestions.length > 0 && (
+                        <div className="absolute inset-x-0 top-full z-20 mt-1 max-h-64 overflow-y-auto rounded-2xl border border-white/10 bg-slate-900 shadow-2xl">
+                          {destinationSuggestions.map((name) => (
+                            <button
+                              key={name}
+                              type="button"
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => {
+                                setJourneyDestination(name);
+                                setIsDestinationDropdownOpen(false);
+                              }}
+                              className="block w-full px-4 py-2.5 text-left text-sm text-white/85 transition hover:bg-white/10"
+                            >
+                              {name}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </label>
                   </div>
                   <button type="submit" className="mt-4 w-full rounded-2xl bg-blue-600 px-4 py-3.5 font-semibold text-white hover:bg-blue-500">Plan with TransitAlert schedule</button>
-                  <datalist id="station-options">{stationOptions.map((name) => <option key={name} value={name} />)}</datalist>
                 </form>
 
                 <div className="min-w-0 overflow-hidden rounded-[2rem] border border-white/10 bg-slate-900 p-4 sm:p-6">
@@ -3670,6 +4122,31 @@ export default function Home() {
                         const isLiveTrainLeg = leg.mode === "train" && leg === journeyTrainLeg;
                         const isLiveSurfaceLeg = (leg.mode === "bus" || leg.mode === "tram") && leg === journeySurfaceLeg;
                         const liveDepartures = isLiveTrainLeg ? journeyMatchingTrainDepartures : isLiveSurfaceLeg ? journeyMatchingSurfaceDepartures : [];
+                        // "Attach" (from Fleet Tracker, or a prior planner run) marks one
+                        // specific real vehicle as the one you're actually on — the
+                        // independent departures lookup above just picks the next
+                        // upcoming service in the same DIRECTION-agnostic route/stop
+                        // query, which is a genuinely different, possibly wrong-direction
+                        // service (confirmed: a real Route 630 attached vehicle headed to
+                        // Elwood, while the departures lookup surfaced upcoming 630s
+                        // toward Monash University, the route's other terminus). When the
+                        // attached vehicle is a real match for this leg's mode, show its
+                        // own current live data instead of guessing from the board.
+                        const attachedTripId = attachedJourneyServiceKey?.includes(":")
+                          ? attachedJourneyServiceKey.slice(attachedJourneyServiceKey.indexOf(":") + 1)
+                          : undefined;
+                        // Trains key by consist/tdn first (getVehicleFocusKey), not trip_id —
+                        // a plain trip_id lookup would miss most real attached trains.
+                        const attachedSurfaceVehicle = isLiveSurfaceLeg && attachedTripId
+                          ? (leg.mode === "bus" ? liveFleetBuses : liveFleetTrams).find(
+                              (candidate) => (candidate.tripId ?? candidate.id) === attachedTripId,
+                            )
+                          : undefined;
+                        const attachedTrainVehicle = isLiveTrainLeg && attachedJourneyServiceKey
+                          ? liveFleetVehicles.find((candidate) => getVehicleFocusKey(candidate) === attachedJourneyServiceKey)
+                          : undefined;
+                        const attachedLiveVehicle = attachedSurfaceVehicle ?? attachedTrainVehicle;
+                        const attachedRouteLabel = attachedTrainVehicle ? attachedTrainVehicle.line : attachedSurfaceVehicle?.route;
                         const legAccentColor = getJourneyLegAccentColor(leg);
                         return (
                           <div
@@ -3680,11 +4157,53 @@ export default function Home() {
                             <p className="text-xs font-semibold uppercase tracking-wider text-current/70">Leg {index + 1} · {leg.mode}</p>
                             <p className="mt-2 break-words font-semibold text-white">{leg.from} → {leg.to}</p>
                             <p className="mt-1 break-words text-sm text-white/55">{leg.title} · {leg.detail}</p>
+                            {attachedLiveVehicle && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setFocusedVehicleKey(attachedJourneyServiceKey);
+                                  setActiveTab("map");
+                                  setIsPlannerOpen(false);
+                                  setIsSidebarOpen(false);
+                                }}
+                                className="mt-3 w-full rounded-xl border border-cyan-300/30 bg-cyan-500/10 px-3 py-2.5 text-left transition hover:bg-cyan-500/20"
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-cyan-200">You're on this service</p>
+                                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-cyan-300/70">Show on map →</p>
+                                </div>
+                                <p className="mt-1 font-semibold text-white">
+                                  {attachedRouteLabel} to {attachedLiveVehicle.destination || "destination"}
+                                </p>
+                                <p className="mt-1 text-xs text-white/50">Live position tracked — this is the real vehicle you attached to, not a board guess.</p>
+                              </button>
+                            )}
                             {(isLiveTrainLeg || isLiveSurfaceLeg) && (
                               <div className="mt-3 grid gap-2">
-                                {liveDepartures.length > 0 ? liveDepartures.map((departure, departureIndex) => (
-                                  <div key={`${departure.route}-${departure.destination}-${departure.expectedAt || departure.scheduledAt}`} className="rounded-xl border border-blue-300/15 bg-blue-500/10 px-3 py-2.5">
-                                    <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-blue-200/75">{departureIndex === 0 ? "Take this service" : "If you miss it · next service"}</p>
+                                {liveDepartures.length > 0 ? liveDepartures.map((departure, departureIndex) => {
+                                  // Train departures (VerifiedDeparture) carry a real tripId; bus/tram
+                                  // departures (SurfaceStopDeparturesPayload) carry their real run
+                                  // identifier as runId instead — no tripId field at all on that type.
+                                  const trackingId = "tripId" in departure ? departure.tripId : "runId" in departure ? departure.runId : undefined;
+                                  return (
+                                  <button
+                                    type="button"
+                                    key={`${departure.route}-${departure.destination}-${departure.expectedAt || departure.scheduledAt}`}
+                                    onClick={() => {
+                                      if (!trackingId) return;
+                                      const prefix = leg.mode === "train" ? "trip" : leg.mode;
+                                      attachJourneyServiceDirect(
+                                        `${prefix}:${trackingId}`,
+                                        `${departure.route} · to ${departure.destination}`,
+                                      );
+                                    }}
+                                    disabled={!trackingId}
+                                    className="w-full rounded-xl border border-blue-300/15 bg-blue-500/10 px-3 py-2.5 text-left transition enabled:hover:bg-blue-500/20 disabled:cursor-default"
+                                  >
+                                    <div className="flex items-center justify-between gap-2">
+                                      <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-blue-200/75">{departureIndex === 0 ? "Take this service" : "If you miss it · next service"}</p>
+                                      {trackingId && <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-blue-300/70">Tap to lock on →</p>}
+                                    </div>
                                     <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
                                       <p className="font-semibold text-white">
                                         {new Date(departure.expectedAt || departure.scheduledAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} to {departure.destination}
@@ -3692,9 +4211,13 @@ export default function Home() {
                                       </p>
                                       {"platform" in departure && departure.platform && <p className="text-sm font-semibold text-blue-100">Platform {departure.platform}</p>}
                                     </div>
-                                    <p className="mt-1 text-xs text-white/50">{departure.route} · {departure.status === "cancelled" ? "Cancelled" : "delaySeconds" in departure && departure.delaySeconds && departure.delaySeconds > 60 ? `${Math.round(departure.delaySeconds / 60)} min late` : "On time"}</p>
-                                  </div>
-                                )) : (
+                                    <p className="mt-1 text-xs text-white/50">{departure.route} · {getDepartureDelayLabel(departure)}</p>
+                                    {trackingId && (leg.mode === "bus" || leg.mode === "tram" || leg.mode === "train") && (
+                                      <JourneyArrivalTime mode={leg.mode} tripId={trackingId} destinationStopName={leg.to} />
+                                    )}
+                                  </button>
+                                  );
+                                }) : (
                                   <p className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/55">Checking live departure time…</p>
                                 )}
                               </div>
@@ -3841,7 +4364,7 @@ export default function Home() {
                                 <span className="truncate text-[11px] text-white/45">{trip.vehicleModel}</span>
                               )}
                               <div className="flex items-center gap-2">
-                                <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${trip.fleet === "hcmt" ? "bg-sky-300" : trip.fleet === "vlocity" ? "bg-violet-300" : trip.fleet === "n-class" ? "bg-purple-400" : trip.fleet === "sprinter" ? "bg-purple-300" : trip.fleet === "xpt" ? "bg-orange-400" : trip.fleet.startsWith("bus:") ? "bg-amber-400" : trip.fleet.startsWith("tram:") ? "bg-emerald-400" : trip.fleet === "edi-comeng" || trip.fleet === "alstom-comeng" ? "bg-emerald-300" : "bg-cyan-300"}`} />
+                                <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${trip.fleet === "hcmt" ? "bg-sky-300" : trip.fleet === "vlocity" || trip.fleet === "vlocity-standard-gauge" ? "bg-violet-300" : trip.fleet === "n-class" ? "bg-purple-400" : trip.fleet === "sprinter" ? "bg-purple-300" : trip.fleet === "xpt" ? "bg-orange-400" : trip.fleet.startsWith("bus:") ? "bg-amber-400" : trip.fleet.startsWith("tram:") ? "bg-emerald-400" : trip.fleet === "edi-comeng" || trip.fleet === "alstom-comeng" ? "bg-emerald-300" : "bg-cyan-300"}`} />
                                 <span className="font-semibold text-white">{fleetTypeLabels.get(trip.fleet) ?? trip.fleet}</span>
                               </div>
                               {/* Category (above) is the physical size class — the real chassis/model
@@ -3881,9 +4404,128 @@ export default function Home() {
                         Showing {fleetTripsToDisplay.length} live rows for {selectedFleetFilterLabel}. Counts are calculated from the current live feed after fleet classification.
                       </p>
                     </div>
-                  ) : (
+                  ) : shouldLookupFleetHistory && fleetHistoryQuery.data && fleetHistoryQuery.data.status !== "idle" ? (
+                    <div className="rounded-[1.8rem] border border-amber-300/20 bg-amber-500/[0.04] p-5">
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-200/80">
+                        Not currently running — last known record
+                      </p>
+                      <p className="mt-2 text-lg font-semibold text-white">
+                        {fleetHistoryQuery.data.consist}
+                        <span className="ml-2 text-sm font-normal text-white/50">
+                          last seen{" "}
+                          {fleetHistoryQuery.data.last_seen_at
+                            ? new Date(fleetHistoryQuery.data.last_seen_at).toLocaleString("en-AU")
+                            : "unknown"}
+                        </span>
+                      </p>
+                      {fleetHistoryQuery.data.last_known_position && (
+                        <p className="mt-1 text-sm text-white/65">
+                          Last known position: {fleetHistoryQuery.data.last_known_position.lat.toFixed(5)},{" "}
+                          {fleetHistoryQuery.data.last_known_position.lng.toFixed(5)}
+                        </p>
+                      )}
+                      {fleetHistoryQuery.data.last_service && (
+                        <p className="mt-1 text-sm text-white/65">
+                          Last service: {fleetHistoryQuery.data.last_service.line ?? "Unknown line"}
+                          {fleetHistoryQuery.data.last_service.destination
+                            ? ` to ${fleetHistoryQuery.data.last_service.destination}`
+                            : ""}
+                          {fleetHistoryQuery.data.last_service.tdn ? ` (TDN ${fleetHistoryQuery.data.last_service.tdn})` : ""}
+                        </p>
+                      )}
+                      {(fleetHistoryQuery.data.todays_services?.length ?? 0) > 0 && (
+                        <div className="mt-4">
+                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/45">
+                            Services today ({fleetHistoryQuery.data.todays_services!.length})
+                          </p>
+                          <div className="mt-2 space-y-1.5">
+                            {fleetHistoryQuery.data.todays_services!.map((service, index) => (
+                              <div
+                                key={`${service.tdn}-${index}`}
+                                className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-sm"
+                              >
+                                <span className="text-white/80">
+                                  {service.line ?? "Unknown line"}
+                                  {service.destination ? ` → ${service.destination}` : ""}
+                                </span>
+                                <span className="font-mono text-xs text-white/50">
+                                  {new Date(service.firstSeenAt).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" })}
+                                  {" – "}
+                                  {new Date(service.lastSeenAt).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" })}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : shouldLookupFleetHistory && fleetHistoryQuery.isLoading ? (
+                    <div className="rounded-[1.8rem] border border-dashed border-white/15 bg-black/15 px-6 py-16 text-center text-lg text-white/55">
+                      Checking sighting history for {trimmedFleetSearchQuery}...
+                    </div>
+                  ) : !shouldLookupFleetTypeHistory ? (
                     <div className="rounded-[1.8rem] border border-dashed border-white/15 bg-black/15 px-6 py-16 text-center text-lg text-white/55">
                       No live rows match the {selectedFleetFilterLabel} fleet filter right now.
+                      {shouldLookupFleetHistory && (
+                        <span className="mt-2 block text-sm text-white/40">
+                          No sighting history logged for {trimmedFleetSearchQuery} either — tracking only covers sets seen running since this feature was added.
+                        </span>
+                      )}
+                    </div>
+                  ) : null}
+
+                  {/* The full fleet-type roster (every known set, in-service or not) shows
+                      independent of whether any of them are live right now — a fleet with
+                      only a handful of sets in service is exactly the case where you want
+                      to see the ones that aren't running too, not just the live ones. */}
+                  {shouldLookupFleetTypeHistory && fleetTypeHistoryQuery.isLoading && (
+                    <div className="mt-3 rounded-[1.8rem] border border-dashed border-white/15 bg-black/15 px-6 py-16 text-center text-lg text-white/55">
+                      Checking sighting history for {selectedFleetFilterLabel}...
+                    </div>
+                  )}
+                  {shouldLookupFleetTypeHistory && fleetTypeHistoryQuery.data && fleetTypeHistoryQuery.data.sets.length > 0 && (
+                    <div className="mt-3 space-y-3">
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-white/45">
+                        Full {selectedFleetFilterLabel} roster ({fleetTypeHistoryQuery.data.sets.filter((s) => s.inService).length} in service,{" "}
+                        {fleetTypeHistoryQuery.data.sets.filter((s) => !s.inService).length} not in service)
+                      </p>
+                      {fleetTypeHistoryQuery.data.sets.map((set) => (
+                        <div
+                          key={set.setNumber}
+                          className={`rounded-[1.4rem] border p-4 ${set.inService ? "border-emerald-300/25 bg-emerald-500/[0.04]" : "border-amber-300/20 bg-amber-500/[0.04]"}`}
+                        >
+                          <p className="text-lg font-semibold text-white">
+                            {set.setNumber}
+                            <span
+                              className={`ml-2 rounded-md px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.12em] ${set.inService ? "bg-emerald-500/20 text-emerald-100" : "bg-amber-500/20 text-amber-100"}`}
+                            >
+                              {set.inService ? "In service" : "Not in service"}
+                            </span>
+                            <span className="ml-2 text-sm font-normal text-white/50">
+                              last seen {new Date(set.lastSeenAt).toLocaleString("en-AU")}
+                            </span>
+                          </p>
+                          {set.lastKnownPosition && (
+                            <p className="mt-1 text-sm text-white/65">
+                              {set.inService ? "Current position" : "Last known position"}: {set.lastKnownPosition.lat.toFixed(5)},{" "}
+                              {set.lastKnownPosition.lng.toFixed(5)}
+                            </p>
+                          )}
+                          <p className="mt-1 text-sm text-white/65">
+                            {set.inService ? "Current service" : "Last service"}: {set.lastService.line ?? "Unknown line"}
+                            {set.lastService.destination ? ` to ${set.lastService.destination}` : ""}
+                            {set.lastService.tdn ? ` (TDN ${set.lastService.tdn})` : ""}
+                          </p>
+                          <p className="mt-1 text-xs text-white/45">
+                            {set.todaysServiceCount} service{set.todaysServiceCount === 1 ? "" : "s"} logged today
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {shouldLookupFleetTypeHistory && fleetTypeHistoryQuery.data && fleetTypeHistoryQuery.data.sets.length === 0 && fleetTripsToDisplay.length === 0 && (
+                    <div className="mt-3 rounded-[1.8rem] border border-dashed border-white/15 bg-black/15 px-6 py-16 text-center text-lg text-white/55">
+                      No sighting history logged for {selectedFleetFilterLabel} yet — tracking only covers sets seen running since this feature was added.
                     </div>
                   )}
                 </div>

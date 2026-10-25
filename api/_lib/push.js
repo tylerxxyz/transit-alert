@@ -1,5 +1,6 @@
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import webpush from "web-push";
+import { dispatchFavouriteSetEvents } from "./favourite-set-notifications.js";
 
 let cachedPushDbContext;
 
@@ -89,10 +90,107 @@ export async function removeSubscriptionByEndpoint(endpoint) {
   return true;
 }
 
-async function getAllSubscriptions() {
+// null clears back to "every category" (the same as a subscription that's
+// never set a preference at all) — categories is otherwise the exact list of
+// category ids (see ALERT_CATEGORY_DEFINITIONS below) this endpoint wants.
+export async function updateSubscriptionCategories(endpoint, categories) {
+  const context = await loadPushDbContext();
+  if (!context || !endpoint) return false;
+  const { db, pushSubscriptionsTable } = context;
+  const value = Array.isArray(categories) ? categories : null;
+  const updated = await db
+    .update(pushSubscriptionsTable)
+    .set({ notificationCategories: value })
+    .where(eq(pushSubscriptionsTable.endpoint, endpoint))
+    .returning({ endpoint: pushSubscriptionsTable.endpoint });
+  return updated.length > 0;
+}
+
+// null clears back to "every line" — same contract as
+// updateSubscriptionCategories above, applied as a second, independent
+// filter (see filterSubscriptionsByLines below).
+export async function updateSubscriptionLines(endpoint, lines) {
+  const context = await loadPushDbContext();
+  if (!context || !endpoint) return false;
+  const { db, pushSubscriptionsTable } = context;
+  const value = Array.isArray(lines) ? lines : null;
+  const updated = await db
+    .update(pushSubscriptionsTable)
+    .set({ notificationLines: value })
+    .where(eq(pushSubscriptionsTable.endpoint, endpoint))
+    .returning({ endpoint: pushSubscriptionsTable.endpoint });
+  return updated.length > 0;
+}
+
+async function getSubscriptionsForCategory(categoryId) {
   const context = await loadPushDbContext();
   if (!context) return [];
-  return context.db.query.pushSubscriptionsTable.findMany();
+  const { db, pushSubscriptionsTable } = context;
+  if (!categoryId) return db.query.pushSubscriptionsTable.findMany();
+  // A null notification_categories means "every category" (the default for
+  // every subscription created before this preference existed, and anyone
+  // who's never touched their settings) — only a subscription that has
+  // explicitly set a list, and left this category off it, gets excluded.
+  return db
+    .select()
+    .from(pushSubscriptionsTable)
+    .where(sql`${pushSubscriptionsTable.notificationCategories} IS NULL OR ${pushSubscriptionsTable.notificationCategories} @> ${JSON.stringify([categoryId])}::jsonb`);
+}
+
+// alertLines is the specific alert's own real line list (e.g. ["Sandringham
+// Line"], see normaliseLiveAlert in metro-notify/alerts.js) — a subscriber
+// with a line preference set only gets pushes for alerts that name one of
+// their chosen lines. An alert with no specific line (or a subscriber who's
+// never set this preference, notificationLines === null) is never filtered
+// out by this — same "can never silently mute anyone by default" contract
+// as the category filter.
+function filterSubscriptionsByLines(subscriptions, alertLines) {
+  const wantedLines = Array.isArray(alertLines) ? alertLines.filter((line) => typeof line === "string" && line.trim()) : [];
+  if (wantedLines.length === 0) return subscriptions;
+  return subscriptions.filter((subscription) => {
+    const preferredLines = subscription.notificationLines;
+    if (!Array.isArray(preferredLines)) return true;
+    return preferredLines.some((line) => wantedLines.includes(line));
+  });
+}
+
+// V/Line's real GTFS corridor id (set as alert.corridors in
+// api/_lib/ptv-disruptions.js's normalisePtvDisruption, e.g. "gippsland")
+// needs mapping to the same rider-facing label used for its PUSH_LINE_GROUPS
+// toggle in src/lib/push.ts — "Bairnsdale" rather than the internal
+// "gippsland" id, matching the terminus name PTV/Metro actually call it.
+const VLINE_CORRIDOR_LABELS = {
+  gippsland: "Bairnsdale",
+  geelong: "Geelong",
+  ballarat: "Ballarat",
+  bendigo: "Bendigo",
+  seymour: "Seymour",
+};
+
+// A V/Line or bus disruption's own `lines` tag is almost always the specific
+// corridor or route name (e.g. "Gippsland", "703"), never the literal word
+// "V/Line" or "Bus" — so a rider's per-corridor/"Buses" preference (see
+// PUSH_LINE_GROUPS in src/lib/push.ts) would never match on `lines` alone.
+// `alert.mode` (set in api/_lib/ptv-disruptions.js's normalisePtvDisruption)
+// reliably says which of these an alert actually is regardless of what its
+// `lines` array contains, so fold in a matching synthetic tag from it — for
+// V/Line, the resolved corridor label when known, falling back to the
+// generic "V/Line" tag on the rare disruption whose corridor never resolved
+// (no toggle matches that literal tag any more, so it only still reaches
+// subscribers who haven't narrowed their line preference at all).
+function getAlertModeTags(alert) {
+  if (alert?.mode === "vline") {
+    const labels = (Array.isArray(alert.corridors) ? alert.corridors : [])
+      .map((corridor) => VLINE_CORRIDOR_LABELS[corridor])
+      .filter(Boolean);
+    return labels.length > 0 ? labels : ["V/Line"];
+  }
+  if (alert?.mode === "bus") return ["Bus"];
+  return [];
+}
+
+function getAlertMatchLines(alert) {
+  return [...(alert?.lines ?? []), ...getAlertModeTags(alert)];
 }
 
 // PTV's own "last modified" timestamp on a disruption record can be far
@@ -273,6 +371,28 @@ export function formatAlertPushTitle(rawTitle, cleanedBody) {
   return causeMatch ? `${title} due to ${causeMatch[1].trim()}` : title;
 }
 
+// alert.lines already carries the real, specific corridor this disruption
+// was fetched for (Metro's healthboard is queried one line at a time — see
+// normaliseLiveAlert in metro-notify/alerts.js) but a generic alert body like
+// "Delays up to 10 minutes due to extreme weather." never repeats it, so a
+// push notification built from the body alone reads as systemwide even when
+// it's really one line. "All lines"/"Trams"/a bare station name aren't a
+// useful corridor label here, so those are filtered out rather than shown.
+function getAlertLineLabel(alert) {
+  const lines = Array.isArray(alert?.lines) ? alert.lines.filter((line) => typeof line === "string" && line.trim()) : [];
+  const meaningful = lines
+    .map((line) => line.trim())
+    .filter((line) => !/^all lines$/i.test(line) && !/\bstation\b/i.test(line) && line.toLowerCase() !== "trams" && line.toLowerCase() !== "metro");
+  return meaningful.length ? meaningful.join(", ") : null;
+}
+
+export function withAlertLineLabel(alert, body) {
+  const lineLabel = getAlertLineLabel(alert);
+  if (!lineLabel || !body) return body;
+  if (body.toLowerCase().includes(lineLabel.toLowerCase())) return body;
+  return `${lineLabel}: ${body}`;
+}
+
 async function deliverPushToSubscriptions(subscriptions, payload) {
   const body = JSON.stringify(payload);
   let succeeded = 0;
@@ -302,9 +422,45 @@ async function deliverPushToSubscriptions(subscriptions, payload) {
   return { attempted: subscriptions.length, succeeded, vapidConfigured: true };
 }
 
-export async function sendPushToAllSubscriptions(payload) {
+// categoryId is optional — admin/test/announcement sends omit it and reach
+// every subscriber regardless of preference (those are one-off deliberate
+// actions, not routine alert traffic a rider would want to mute), while the
+// real alert-sending paths below always pass one so a subscriber's
+// notification preferences are actually respected. alertLines is likewise
+// optional and only ever passed by the real alert-sending paths.
+export async function sendPushToAllSubscriptions(payload, categoryId, alertLines) {
   if (!ensureVapidConfigured()) return { attempted: 0, succeeded: 0, vapidConfigured: false };
-  return deliverPushToSubscriptions(await getAllSubscriptions(), payload);
+  const subscriptions = filterSubscriptionsByLines(await getSubscriptionsForCategory(categoryId), alertLines);
+  return deliverPushToSubscriptions(subscriptions, payload);
+}
+
+// Mirrors ALERT_FILTERS/getAlertFilter in src/pages/TodaysAlerts.tsx — keep
+// the two in sync by hand. Duplicated rather than shared because the
+// frontend (Vite/React) and this API layer (plain Node ESM) are different
+// runtime/bundler contexts with no easy common import path — the same
+// tradeoff already made for fleet-type classification between
+// api/_lib/fleet-tracking.js and src/pages/Home.tsx.
+const ALERT_CATEGORY_DEFINITIONS = [
+  { id: "trespasser", keywords: ["trespasser", "trespass", "person near the tracks", "person on the tracks"] },
+  { id: "police-request", keywords: ["police request", "police operation", "police presence", "police investigation", "police incident"] },
+  { id: "cancellation", keywords: ["has been cancelled", "have been cancelled", "service has been cancelled", "cancellation", "run cancelled"] },
+  { id: "faulty-train", trainSpecific: true, keywords: ["faulty train", "disabled train", "train fault", "mechanical fault", "mechanical issue", "equipment fault", "broken down train"] },
+  { id: "track-fault", trainSpecific: true, keywords: ["track fault", "signalling", "signal fault", "points fault", "overhead fault", "power fault", "infrastructure fault"] },
+  { id: "bus-replacement", keywords: ["bus replacement", "replacement bus", "buses replace trains", "replacement buses", "buses will replace trains", "coach replacement", "coach service"] },
+  { id: "works-upgrade", keywords: ["planned work", "works", "maintenance", "upgrade", "big build", "occupation", "level crossing removal"] },
+  { id: "station-access", keywords: ["station detour", "access", "exit", "lift outage", "escalator", "entrance closed", "platform closure"] },
+  { id: "delay", keywords: ["delay", "major delays", "delayed", "service change", "service disruption"] },
+];
+
+export function getAlertCategoryId(alert) {
+  const searchable = `${alert?.title ?? ""} ${alert?.summary ?? ""} ${(alert?.lines ?? []).join(" ")}`.toLowerCase();
+  const isTrainOnlyExempt = alert?.mode === "tram" || alert?.mode === "bus";
+  const match = ALERT_CATEGORY_DEFINITIONS.find(
+    (category) =>
+      !(category.trainSpecific && isTrainOnlyExempt) &&
+      category.keywords.some((keyword) => searchable.includes(keyword)),
+  );
+  return match?.id ?? "other";
 }
 
 // Real per-account targeting rather than a blind broadcast — this app has a
@@ -423,7 +579,7 @@ async function checkTramFeedRecovery() {
     body: "Live tram tracking has resumed — PTV's tram data feed is back up.",
     url: "./alerts/today",
     tag: "transitalert-tram-feed-recovered",
-  });
+  }, "tram-tracking");
   // If nobody was actually reachable, don't act like this was announced —
   // let the next run try again with a fresh check.
   if (!(result?.succeeded > 0)) {
@@ -431,35 +587,60 @@ async function checkTramFeedRecovery() {
   }
 }
 
-// Real, specific train 430M (the tracked/highlighted consist — see
-// isTrackedConsist in Map.tsx) reforming as a new service is a distinct,
-// real state change: its trip_id changing. Claiming
-// "transitalert-430m-service-<tripId>" atomically means each real trip_id
-// this physical train picks up only ever announces once, the same
-// dedup approach the alert-push loop already uses.
-// This app has a real, multi-account auth system — a blind broadcast would
-// reach every subscriber, not just the one person who asked for this
-// specific train's alerts. Targeted to Tyler's own account by email.
-const TRACKED_430M_NOTIFY_EMAIL = "tylerbnobleday@gmail.com";
-
-async function checkTracked430mService() {
-  const { getCachedLiveTrains } = await import("../ptv/live-trains.js");
-  const trains = getCachedLiveTrains();
-  const tracked = trains?.find?.((train) => train.consist === "430M");
-  if (!tracked?.tripId) return;
-
-  const claimed = await claimAlertForSending(`transitalert-430m-service-${tracked.tripId}`);
-  if (!claimed) return;
-
-  const result = await sendPushToUserEmail(TRACKED_430M_NOTIFY_EMAIL, {
-    title: "430M formed a new service",
-    body: `430M is now running ${tracked.line ? `on the ${tracked.line} line` : "a new service"}${tracked.destination ? ` to ${tracked.destination}` : ""} (TDN ${tracked.tdn}).`,
-    url: "./",
-    tag: `430m-${tracked.tripId}`,
+export async function checkFavouriteSetServices() {
+  const context = await loadPushDbContext();
+  if (!context || !ensureVapidConfigured()) return;
+  const { ensureLiveTrainsFresh, getFreshCachedLiveTrains } = await import("../ptv/live-trains.js");
+  await ensureLiveTrainsFresh();
+  const { userPreferencesTable } = await import("../../src/lib/db/src/schema/auth.js");
+  const { db, pushSubscriptionsTable } = context;
+  await dispatchFavouriteSetEvents(getFreshCachedLiveTrains(), {
+    listUsers: async () => [...new Set((await db.select({ userId: pushSubscriptionsTable.userId }).from(pushSubscriptionsTable)).map(row => row.userId).filter(Boolean))],
+    readUser: async (userId) => {
+      const [preferences, subscriptions] = await Promise.all([
+        db.query.userPreferencesTable.findFirst({ where: eq(userPreferencesTable.userId, userId) }),
+        db.select().from(pushSubscriptionsTable).where(eq(pushSubscriptionsTable.userId, userId)),
+      ]);
+      return { preferences, subscriptions };
+    },
+    claim: claimAlertForSending,
+    deliver: (subscription, payload) => deliverPushToSubscriptions([subscription], payload),
   });
-  if (!(result?.succeeded > 0)) {
-    await releaseAlertClaim(`transitalert-430m-service-${tracked.tripId}`);
-  }
+}
+
+// Save account-wide push filters atomically, independently of favourite sets.
+// Endpoint ownership is checked before touching either account or device settings.
+export async function saveUserPushPreferences(userId, endpoint, patch) {
+  const context = await loadPushDbContext();
+  if (!context || !userId) return false;
+  const { userPreferencesTable } = await import("../../src/lib/db/src/schema/auth.js");
+  const { db, pushSubscriptionsTable } = context;
+  return db.transaction(async (tx) => {
+    const owner = await tx.query.pushSubscriptionsTable.findFirst({ where: eq(pushSubscriptionsTable.endpoint, endpoint) });
+    if (owner?.userId !== userId) return false;
+    await tx.insert(userPreferencesTable).values({ userId }).onConflictDoNothing();
+    let app = sql`${userPreferencesTable.appPreferences}`;
+    const device = {};
+    if (patch.categories !== undefined) {
+      app = sql`jsonb_set(${app}, '{pushNotificationCategories}', ${JSON.stringify(patch.categories)}::jsonb)`;
+      device.notificationCategories = patch.categories;
+    }
+    if (patch.lines !== undefined) {
+      app = sql`jsonb_set(${app}, '{pushNotificationLines}', ${JSON.stringify(patch.lines)}::jsonb)`;
+      device.notificationLines = patch.lines;
+    }
+    await tx.update(userPreferencesTable).set({ appPreferences: app, updatedAt: new Date() }).where(eq(userPreferencesTable.userId, userId));
+    await tx.update(pushSubscriptionsTable).set(device).where(eq(pushSubscriptionsTable.userId, userId));
+    return true;
+  });
+}
+
+export async function readUserPushPreferences(userId) {
+  const context = await loadPushDbContext();
+  if (!context) return null;
+  const { userPreferencesTable } = await import("../../src/lib/db/src/schema/auth.js");
+  const row = await context.db.query.userPreferencesTable.findFirst({ where: eq(userPreferencesTable.userId, userId) });
+  return { categories: row?.appPreferences?.pushNotificationCategories ?? null, lines: row?.appPreferences?.pushNotificationLines ?? null };
 }
 
 export async function checkAndPushNewAlerts() {
@@ -468,32 +649,72 @@ export async function checkAndPushNewAlerts() {
   await checkTramFeedRecovery().catch((error) => {
     console.warn("[push] tram feed recovery check failed:", error instanceof Error ? error.message : error);
   });
-  await checkTracked430mService().catch((error) => {
-    console.warn("[push] 430M service check failed:", error instanceof Error ? error.message : error);
+  await checkFavouriteSetServices().catch((error) => {
+    console.warn("[push] favourite set service check failed:", error instanceof Error ? error.message : error);
   });
 
   const { fetchMergedMetroAlerts } = await import("../metro-notify/alerts.js");
   const alerts = await fetchMergedMetroAlerts();
   const headlineAlerts = alerts.filter(isHeadlineAlert);
 
+  const claimedAlerts = [];
   for (const alert of headlineAlerts) {
-    if (!(await claimAlertForSending(alert.id))) continue;
+    if (await claimAlertForSending(alert.id)) claimedAlerts.push(alert);
+  }
+  if (claimedAlerts.length === 0) return;
 
-    const body = formatAlertPushBody(alert.summary);
+  // Only keep an alert marked "sent" once it actually reached a device.
+  // This loop runs continuously from server start, long before anyone may
+  // have subscribed yet — keeping the claim regardless meant every alert
+  // that existed before the first real subscriber signed up was
+  // permanently skipped and could never be delivered to them. Release the
+  // claim so a later run (once someone has subscribed) can still send it.
+  const releaseIfUndelivered = async (result, ids) => {
+    if (result?.succeeded > 0) return;
+    for (const id of ids) await releaseAlertClaim(id);
+  };
+
+  // Real PTV pattern: a single physical train taken out of service has ALL
+  // of its remaining rostered workings for the day cancelled together, each
+  // generating its own separate alert record even though a rider sees them
+  // as "the same disruption" — a burst of 2-3 "X to Y service has been
+  // cancelled" alerts landing in the same check cycle is that, not several
+  // unrelated cancellations. One combined push instead of one per alert.
+  const cancellations = claimedAlerts.filter((alert) => /has been cancelled|have been cancelled|service cancelled|run cancelled|cancellation/i.test(`${alert.title} ${alert.summary}`));
+  const otherAlerts = claimedAlerts.filter((alert) => !cancellations.includes(alert));
+
+  for (const alert of otherAlerts) {
+    const body = withAlertLineLabel(alert, formatAlertPushBody(alert.summary));
     const result = await sendPushToAllSubscriptions({
       title: formatAlertPushTitle(alert.title, body) || "TransitAlert",
       body,
       url: "./alerts/today",
       tag: alert.id,
-    });
-    // Only keep an alert marked "sent" once it actually reached a device.
-    // This loop runs continuously from server start, long before anyone
-    // may have subscribed yet — keeping the claim regardless meant every
-    // alert that existed before the first real subscriber signed up was
-    // permanently skipped and could never be delivered to them. Release the
-    // claim so a later run (once someone has subscribed) can still send it.
-    if (!(result?.succeeded > 0)) {
-      await releaseAlertClaim(alert.id);
-    }
+    }, getAlertCategoryId(alert), getAlertMatchLines(alert));
+    await releaseIfUndelivered(result, [alert.id]);
+  }
+
+  if (cancellations.length === 1) {
+    const [alert] = cancellations;
+    const body = withAlertLineLabel(alert, formatAlertPushBody(alert.summary));
+    const result = await sendPushToAllSubscriptions({
+      title: formatAlertPushTitle(alert.title, body) || "TransitAlert",
+      body,
+      url: "./alerts/today",
+      tag: alert.id,
+    }, "cancellation", getAlertMatchLines(alert));
+    await releaseIfUndelivered(result, [alert.id]);
+  } else if (cancellations.length > 1) {
+    const body = cancellations.map((alert) => withAlertLineLabel(alert, formatAlertPushBody(alert.summary))).filter(Boolean).join(" ");
+    // Any subscriber interested in ANY of the involved lines should still
+    // get this combined push, not just one interested in every line at once.
+    const combinedLines = [...new Set(cancellations.flatMap((alert) => getAlertMatchLines(alert)))];
+    const result = await sendPushToAllSubscriptions({
+      title: `${cancellations.length} services cancelled`,
+      body,
+      url: "./alerts/today",
+      tag: `combined-cancellations-${cancellations.map((alert) => alert.id).sort().join("-")}`,
+    }, "cancellation", combinedLines);
+    await releaseIfUndelivered(result, cancellations.map((alert) => alert.id));
   }
 }

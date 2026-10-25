@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
 export const ROLE_OPTIONS = [
   "Admin",
@@ -869,6 +869,12 @@ export async function getUserPreferences(userId) {
 }
 
 export async function upsertUserPreferences(userId, patch) {
+  // Push filters have their own atomic, authenticated save route. A stale
+  // Home/favourites snapshot must not undo a notification opt-out.
+  if (patch.appPreferences && typeof patch.appPreferences === "object") {
+    const { pushNotificationCategories, pushNotificationLines, ...appPreferences } = patch.appPreferences;
+    patch = { ...patch, appPreferences };
+  }
   try {
     const context = await loadDbContext();
     const db = context?.db ?? null;
@@ -895,7 +901,9 @@ export async function upsertUserPreferences(userId, patch) {
           favouriteRoutes: patch.favouriteRoutes ?? existing.favouriteRoutes,
           selectedMapFilters: patch.selectedMapFilters ?? existing.selectedMapFilters,
           transportModes: patch.transportModes ?? existing.transportModes,
-          appPreferences: patch.appPreferences ?? existing.appPreferences,
+          appPreferences: patch.appPreferences
+            ? sql`${userPreferencesTable.appPreferences} || ${JSON.stringify(patch.appPreferences)}::jsonb`
+            : userPreferencesTable.appPreferences,
           updatedAt: new Date(),
         },
       })

@@ -25,7 +25,7 @@ export function AddReportDrawer({ isOpen, onClose }: AddReportDrawerProps) {
     enabled: isOpen,
     staleTime: 60_000,
   });
-  const { mutate: createReport, isPending } = useCreateReport({
+  const { mutate: createReport, isPending, isError } = useCreateReport({
     mutation: {
       onSuccess: () => {
         queryClient.invalidateQueries({ queryKey: ["/api/reports"] });
@@ -77,7 +77,7 @@ export function AddReportDrawer({ isOpen, onClose }: AddReportDrawerProps) {
       lineNumber: formData.lineNumber ?? "",
       locationName: formData.locationName ?? "",
       notes: formData.notes ?? "",
-      transportType: formData.transportType ?? "",
+      transportType: formData.transportType ?? "train",
     }),
   );
 
@@ -270,6 +270,11 @@ export function AddReportDrawer({ isOpen, onClose }: AddReportDrawerProps) {
                   </div>
                 )}
 
+                {isError && (
+                  <p role="alert" className="rounded-xl border border-red-400/30 bg-red-400/10 p-3 text-sm text-red-200">
+                    Your report could not be saved. Please try again. Your details are still here.
+                  </p>
+                )}
               </form>
             </div>
             
@@ -285,7 +290,7 @@ export function AddReportDrawer({ isOpen, onClose }: AddReportDrawerProps) {
               <button 
                 form="report-form"
                 type="submit"
-                disabled={isPending || !formData.locationName}
+                disabled={isPending || !formData.locationName?.trim()}
                 className="flex-[2] py-4 rounded-2xl font-bold text-primary-foreground bg-primary hover:bg-primary/90 shadow-[0_0_20px_rgba(37,99,235,0.4)] transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isPending ? (

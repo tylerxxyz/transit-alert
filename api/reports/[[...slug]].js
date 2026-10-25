@@ -1,95 +1,89 @@
-const reportStore = [];
-let nextReportId = 1;
+import { createReportRepository } from "../_lib/report-repository.js";
 
-function sendJson(res, status, payload) {
-  res.status(status).json(payload);
-}
+const melbourneDay = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Australia/Melbourne", year: "numeric", month: "2-digit", day: "2-digit",
+});
 
-function buildReportStats(reports) {
-  const routeCounts = new Map();
-
-  for (const report of reports) {
-    const lineNumber = typeof report.lineNumber === "string" ? report.lineNumber.trim() : "";
+export function buildReportStats(reports, now = new Date()) {
+  const today = melbourneDay.format(now);
+  const current = reports.filter((report) => {
+    const date = new Date(report.createdAt);
+    return Number.isFinite(date.getTime()) && date <= now && melbourneDay.format(date) === today;
+  });
+  const routes = new Map();
+  for (const report of current) {
+    if (report.reportType !== "inspector") continue;
+    const lineNumber = report.lineNumber?.trim();
     if (!lineNumber) continue;
-
     const key = `${report.transportType}:${lineNumber}`;
-    const existing = routeCounts.get(key);
-    if (existing) {
-      existing.reportCount += 1;
-      continue;
-    }
-
-    routeCounts.set(key, {
-      lineNumber,
-      transportType: report.transportType,
-      reportCount: 1,
-    });
+    const route = routes.get(key) || { lineNumber, transportType: report.transportType, reportCount: 0 };
+    route.reportCount++;
+    routes.set(key, route);
   }
-
   return {
-    alertsToday: reports.length,
-    riskyRoutes: [...routeCounts.values()]
+    alertsToday: current.length,
+    riskyRoutes: [...routes.values()]
       .map((route) => ({
         ...route,
         riskLevel: route.reportCount >= 5 ? "high" : route.reportCount >= 3 ? "medium" : "low",
       }))
-      .sort((left, right) => right.reportCount - left.reportCount)
+      .sort((a, b) => b.reportCount - a.reportCount)
       .slice(0, 8),
   };
 }
 
-export default async function handler(req, res) {
-  const slug = Array.isArray(req.query?.slug) ? req.query.slug : req.query?.slug ? [req.query.slug] : [];
-  const action = slug[0] || "";
-
-  if (!action) {
-    if (req.method === "GET") {
-      sendJson(
-        res,
-        200,
-        [...reportStore].sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt)),
-      );
-      return;
-    }
-
-    if (req.method === "POST") {
-      const body = req.body && typeof req.body === "object" ? req.body : {};
-      const report = {
-        id: nextReportId,
-        reportType:
-          body.reportType === "delay" || body.reportType === "incident" ? body.reportType : "inspector",
-        transportType:
-          body.transportType === "tram" || body.transportType === "bus" || body.transportType === "stop"
-            ? body.transportType
-            : "train",
-        lineNumber: typeof body.lineNumber === "string" && body.lineNumber.trim() ? body.lineNumber.trim() : null,
-        direction:
-          body.direction === "city_bound" || body.direction === "outbound" ? body.direction : "unknown",
-        locationName:
-          typeof body.locationName === "string" && body.locationName.trim()
-            ? body.locationName.trim()
-            : "Unknown location",
-        notes: typeof body.notes === "string" && body.notes.trim() ? body.notes.trim() : null,
-        username: typeof body.username === "string" && body.username.trim() ? body.username.trim() : "Guest",
-        lat: typeof body.lat === "number" ? body.lat : null,
-        lng: typeof body.lng === "number" ? body.lng : null,
-        createdAt: new Date().toISOString(),
-      };
-
-      reportStore.unshift(report);
-      nextReportId += 1;
-      sendJson(res, 201, report);
-      return;
-    }
-
-    sendJson(res, 405, { error: "Method not allowed" });
-    return;
+export function validateReport(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return "Report must be an object";
+  if (!["inspector", "delay", "incident"].includes(body.reportType)) return "Invalid report type";
+  if (!["tram", "train", "bus", "stop"].includes(body.transportType)) return "Invalid transport type";
+  if (body.direction != null && !["city_bound", "outbound", "unknown"].includes(body.direction)) return "Invalid direction";
+  for (const [key, limit] of [["locationName", 200], ["username", 100]]) {
+    if (typeof body[key] !== "string" || !body[key].trim() || body[key].trim().length > limit) return `Invalid ${key}`;
   }
-
-  if (action === "stats" && req.method === "GET") {
-    sendJson(res, 200, buildReportStats(reportStore));
-    return;
+  for (const [key, limit] of [["lineNumber", 100], ["notes", 4000]]) {
+    if (body[key] != null && (typeof body[key] !== "string" || body[key].length > limit)) return `Invalid ${key}`;
   }
-
-  sendJson(res, 404, { error: "Unknown reports action" });
+  if ((body.lat == null) !== (body.lng == null)) return "Latitude and longitude must be provided together";
+  for (const [key, limit] of [["lat", 90], ["lng", 180]]) {
+    if (body[key] != null && (typeof body[key] !== "number" || !Number.isFinite(body[key]) || Math.abs(body[key]) > limit)) return `Invalid ${key}`;
+  }
+  return null;
 }
+
+export function createReportsHandler(repository) {
+  return async function handler(req, res) {
+    const slug = Array.isArray(req.query?.slug) ? req.query.slug : req.query?.slug ? [req.query.slug] : [];
+    const action = slug[0] || "";
+    if (slug.length > 1 || (action && action !== "stats")) return res.status(404).json({ error: "Unknown reports action" });
+    if ((action && req.method !== "GET") || (!action && !["GET", "POST"].includes(req.method))) {
+      return res.status(405).json({ error: "Method not allowed" });
+    }
+    if (req.method === "POST") {
+      const error = validateReport(req.body);
+      if (error) return res.status(400).json({ error });
+    }
+    try {
+      if (req.method === "GET") {
+        const reports = await repository.list();
+        return res.status(200).json(action === "stats" ? buildReportStats(reports) : reports);
+      }
+      const body = req.body;
+      const report = await repository.insert({
+        reportType: body.reportType,
+        transportType: body.transportType,
+        direction: body.direction ?? "unknown",
+        locationName: body.locationName.trim(),
+        username: body.username.trim(),
+        lineNumber: body.lineNumber?.trim() || null,
+        notes: body.notes?.trim() || null,
+        lat: body.lat ?? null,
+        lng: body.lng ?? null,
+      });
+      return res.status(201).json(report);
+    } catch {
+      return res.status(503).json({ error: "Reports are temporarily unavailable. Please try again later." });
+    }
+  };
+}
+
+export default createReportsHandler(createReportRepository());
