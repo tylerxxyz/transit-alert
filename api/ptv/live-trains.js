@@ -1,3 +1,4 @@
+import { feedBearing } from "../_lib/vehicle-bearing.js";
 import GtfsRealtimeBindings from "gtfs-realtime-bindings";
 import { isPtvV3Configured, ptvV3Fetch } from "../_lib/ptv-v3.js";
 import { getVerifiedTrainMarkerDestination, resolveStaticTripIdByRouteAndStartTime } from "../_lib/ptv-timetable.js";
@@ -381,7 +382,7 @@ function buildNswLiveTrains(feed) {
         status: "on_time",
         timestamp: timestamp ? new Date(timestamp * 1000).toISOString() : undefined,
         direction: directionId === 0 ? "up" : directionId === 1 ? "down" : destination === "Southern Cross" ? "city-bound" : "outbound",
-        heading: typeof position.bearing === "number" ? position.bearing : undefined,
+        heading: feedBearing(position),
         trainType: serviceLabel.includes("Xplorer") ? "NSW TrainLink Xplorer" : "NSW TrainLink XPT",
         consist,
         // Frontend summary parsing (getVehicleOriginFallback/getVehicleStoppingPattern
@@ -454,7 +455,7 @@ function buildSydneyTrainsLiveTrains(feed, fleetLookup) {
         status: "on_time",
         timestamp: timestamp ? new Date(timestamp * 1000).toISOString() : undefined,
         direction: directionId === 0 ? "up" : directionId === 1 ? "down" : "outbound",
-        heading: typeof position.bearing === "number" ? position.bearing : undefined,
+        heading: feedBearing(position),
         trainType: fleetClass ?? "Sydney Trains",
         consist,
         serviceDescription: [
@@ -525,7 +526,7 @@ function buildPtvLiveTrains(feed, source) {
         direction: source.key === "vline"
           ? (directionId === 0 ? "down" : "up")
           : (directionId === 0 ? "up" : "down"),
-        heading: typeof position.bearing === "number" ? position.bearing : undefined,
+        heading: feedBearing(position),
         trainType: source.trainType,
         consist,
         serviceDescription: resolvedLine,
@@ -558,7 +559,7 @@ function buildPtvV3LiveTrains(data) {
         status: String(run.status || "on_time").toLowerCase(),
         timestamp: new Date().toISOString(),
         direction: Number(run.direction_id) === 0 ? "up" : "down",
-        heading: Number.isFinite(Number(position.bearing)) ? Number(position.bearing) : undefined,
+        heading: feedBearing(position),
         trainType: String(descriptor.description || "Metro Train"),
         consist: normaliseConsistLabel(descriptor.id, descriptor.description),
         serviceDescription: [routeLabel, destination].filter(Boolean).join(" · "),

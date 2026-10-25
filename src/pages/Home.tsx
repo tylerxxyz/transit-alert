@@ -1048,7 +1048,8 @@ function inferFleetTypeKeyFromConsist(vehicle: LiveTrain): FleetTypeKey | null {
   // no M/T letter at all, unlike Comeng/Siemens/X'Trapolis 100 which always
   // carry the suffix — matching the suffix as optional covers both without
   // missing either real-world format.
-  const motorNumbers = Array.from(vehicle.consist.matchAll(/(\d+)[MT]?\b/gi)).map((match) => Number(match[1]));
+  // Leading \b: "VL15"/"N452" are not suburban cars 15/452 (as in fleet-tracking.js).
+  const motorNumbers = Array.from(vehicle.consist.matchAll(/\b(\d+)[MT]?\b/gi)).map((match) => Number(match[1]));
   if (motorNumbers.some((n) => n >= 9000 && n <= 9999)) return "hcmt";
   if (motorNumbers.some((n) => n >= 8100 && n <= 8699)) return "xtrapolis2";
   if (motorNumbers.some((n) => (n >= 1 && n <= 288) || (n >= 851 && n <= 985))) return "xtrapolis";
@@ -2916,11 +2917,19 @@ export default function Home() {
       }
 
       if (plan.alreadyThere) {
-        const arrivalStation = resolvedOrigin ?? destination ?? { name: trimmedDestination, position: DEFAULT_FALLBACK_COORDS };
+        // The destination, not the nearest GPS station: from a current
+        // location the matched destination stop can be up to ~1 km away.
+        const arrivalStation = destination ?? resolvedOrigin ?? { name: trimmedDestination, position: DEFAULT_FALLBACK_COORDS };
+        const walkMinutes = Math.round((plan.walkFromOriginSeconds ?? 0) / 60);
+        const summary = walkMinutes >= 2
+          ? `${arrivalStation.name} is about a ${walkMinutes} min walk away.`
+          : "You're already at your destination.";
         applyJourneyPlan(
           [arrivalStation],
-          "You're already at your destination.",
-          buildJourneyDisplay([arrivalStation], "You're already at your destination.", [
+          summary,
+          buildJourneyDisplay([arrivalStation], summary, walkMinutes >= 2 ? [
+            { mode: "walk", title: "Walk to destination", from: journeyOrigin, to: arrivalStation.name, detail: `About ${walkMinutes} min on foot — no service needed.`, badge: "Walk" },
+          ] : [
             ...(accessLeg ? [accessLeg] : []),
             { mode: "walk", title: "You have arrived", from: arrivalStation.name, to: arrivalStation.name, detail: "No further travel needed.", badge: "Arrived" },
           ], "Already there", "Station access"),

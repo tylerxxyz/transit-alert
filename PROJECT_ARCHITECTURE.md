@@ -274,7 +274,7 @@ Vercel deployment configuration removed from this repository. The primary deploy
 ### Admin Configuration
 - Default admin credentials from environment variables:
   - `ADMIN_USERNAME` (default: "admin")
-  - `ADMIN_PASSWORD` (default: "AppleJuice")
+  - `ADMIN_PASSWORD` (required for admin password login; no default)
   - `ADMIN_EMAIL`
 
 ---

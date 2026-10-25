@@ -1,3 +1,4 @@
+import { feedBearing } from "../_lib/vehicle-bearing.js";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -184,7 +185,7 @@ function buildPtvLiveTrams(feed, headsignIndex) {
         destination,
         status: "live",
         timestamp: timestamp ? new Date(timestamp * 1000).toISOString() : undefined,
-        heading: typeof position.bearing === "number" ? position.bearing : undefined,
+        heading: feedBearing(position),
         operator: "Yarra Trams",
       };
     })
@@ -229,7 +230,7 @@ function buildPtvV3LiveTrams(data) {
         destination,
         status: "live",
         timestamp: new Date().toISOString(),
-        heading: Number.isFinite(Number(position.bearing)) ? Number(position.bearing) : undefined,
+        heading: feedBearing(position),
         operator: "Yarra Trams",
         source: "PTV Timetable v3",
       };

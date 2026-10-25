@@ -15,8 +15,7 @@ self.addEventListener("push", (event) => {
   event.waitUntil(
     self.registration.showNotification(payload.title || "TransitAlert", {
       body: payload.body || "A new transport update is available.",
-      icon: "./app-logo.svg",
-      badge: "./app-logo.svg",
+      icon: "./icons/app-icon-192.png",
       tag: payload.tag || "transitalert-update",
       data: { url: payload.url || "./" },
     }),

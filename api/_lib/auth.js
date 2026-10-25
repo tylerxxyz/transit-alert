@@ -13,7 +13,11 @@ export const ROLE_OPTIONS = [
 
 const SESSION_COOKIE = "transitalert_session";
 const adminUsername = process.env.ADMIN_USERNAME || "admin";
-const adminPassword = process.env.ADMIN_PASSWORD || "AppleJuice";
+// No built-in default: the old default was published in git history, so a
+// deployment without ADMIN_PASSWORD would accept it. Admin password login is
+// simply unavailable until ADMIN_PASSWORD is set.
+const adminPassword = process.env.ADMIN_PASSWORD || "";
+if (!adminPassword) console.warn("[auth] ADMIN_PASSWORD is not set; admin password login is disabled.");
 const adminEmail = (
   process.env.ADMIN_EMAIL ||
   (adminUsername.trim().toLowerCase() === "tyler" ? "tylerbnobleday@gmail.com" : `${adminUsername}@transitalert.local`)
@@ -21,10 +25,9 @@ const adminEmail = (
 const SESSION_SECRET =
   process.env.AUTH_SESSION_SECRET ||
   process.env.SESSION_SECRET ||
-  crypto
-    .createHash("sha256")
-    .update(`transitalert-fallback:${adminUsername}:${adminPassword}`)
-    .digest("hex");
+  // Never derive the signing key from known values: anyone could forge sessions.
+  // Without a configured secret, sessions simply last until the next restart.
+  crypto.randomBytes(32).toString("hex");
 const DEFAULT_PREMIUM_PRICE_AUD = 5;
 const REGISTRATION_PHASE = (process.env.REGISTRATION_PHASE || "debug-testers").trim().toLowerCase();
 const APPROVED_DEBUG_TESTERS = new Set(
@@ -478,7 +481,7 @@ export async function ensureAdminAccount() {
       where: (fields, operators) => operators.eq(fields.username, adminUsername),
     });
 
-    if (!existing) {
+    if (!existing && adminPassword) {
       const [created] = await db.insert(appUsersTable).values({
         id: createDatabaseUserId(),
         username: adminUsername,
@@ -613,7 +616,7 @@ export async function authenticateUser(username, password) {
     return verifyPassword(password, user.passwordHash) ? sanitizeUser(user) : null;
   } catch (error) {
     logDbFallback("authenticateUser", error);
-    if (username.trim().toLowerCase() === adminUsername.toLowerCase() && password === adminPassword) {
+    if (adminPassword && username.trim().toLowerCase() === adminUsername.toLowerCase() && password === adminPassword) {
       return getFallbackAdminUser();
     }
     return null;

@@ -25,7 +25,8 @@ import siemensIcon from "@/assets/icons/siemens.svg";
 import comengIcon from "@/assets/icons/ss-comeng.svg";
 import { fetchLiveTrains, isCrossCityLiveTrain, isNswTrainLinkLiveTrain, isSydneyTrainsLiveTrain, isVlineLiveTrain, type LiveTrain } from "@/lib/live-trains";
 import { getVlineRouteMetaFromTripId } from "@/lib/regional-fallback";
-import { inferVehicleHeading, validVehicleHeading } from "@/lib/vehicle-heading";
+import { inferVehicleHeading, resolveVehicleHeading, validVehicleHeading } from "@/lib/vehicle-heading";
+import { getStopProgress, type StopProgress } from "@/lib/stop-progress";
 import { fetchSydneyTransit } from "@/lib/sydney-transit";
 import { getBusPowertrainBadge, lookupBusFleetInfo } from "@/lib/bus-fleet";
 import { getCurrentVlineAllocation } from "@/lib/vline-allocation";
@@ -994,6 +995,27 @@ function getMarkerServiceCode(line: string) {
 // Shared by the train/tram/bus "is here" cards — a vehicle within 15% of its
 // last stop or 90% toward its next one reads as "still at"/"basically
 // arrived" rather than a raw, jittery percentage that never quite hits 0 or 100.
+// "Last stop → Now at / Next stop → Then" at a glance, above the full stop
+// list, so riders don't have to find the live marker inside a long pattern.
+function StopProgressSummary({ progress, accent }: { progress: StopProgress | null; accent: string }) {
+  if (!progress || (!progress.now && !progress.next)) return null;
+  const rows = [
+    progress.last ? { label: "Last stop", name: progress.last, strong: false } : null,
+    progress.now ? { label: "Now at", name: progress.now, strong: true } : { label: "Next stop", name: progress.next!, strong: true },
+    progress.then ? { label: progress.now ? "Next stop" : "Then", name: progress.then, strong: false } : null,
+  ].filter((row): row is { label: string; name: string; strong: boolean } => Boolean(row));
+  return (
+    <div className="mb-2 grid gap-1 rounded-xl border border-white/10 bg-white/5 px-3 py-2" style={{ borderLeft: `3px solid ${accent}` }}>
+      {rows.map((row) => (
+        <div key={row.label} className="flex items-baseline gap-2">
+          <span className="w-[4.75rem] shrink-0 text-[9px] font-semibold uppercase tracking-[0.12em] text-white/40">{row.label}</span>
+          <span className={`min-w-0 truncate text-sm ${row.strong ? "font-bold text-white" : "font-semibold text-white/65"}`}>{row.name}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function formatLiveSegmentLabel(position: { from: string; to: string; progress: number }) {
   if (position.progress >= 0.9) return `Arriving at ${position.to}`;
   if (position.progress <= 0.15) return `Departing ${position.from}`;
@@ -1066,12 +1088,14 @@ function createLiveTrainIcon(
 ) {
   const markerLine = /HCMT/i.test(getVehicleDisplayType(vehicle)) ? "Metro Tunnel" : vehicle.line;
   const color = getLiveLineColor(markerLine);
-  const heading = validVehicleHeading(vehicle.heading)
-    ?? inferVehicleHeading(
+  const heading = resolveVehicleHeading(
+    vehicle.heading,
+    inferVehicleHeading(
       [vehicle.lat, vehicle.lng],
       options?.routeStops ?? (isVlineLiveTrain(vehicle) ? getRegionalGtfsPatternStations(vehicle) : getMetroStoppingPatternStations(vehicle, true)),
       vehicle.destination,
-    );
+    ),
+  );
   const arrow = heading === undefined ? "•" : "▲";
   const rotation = heading ?? 0;
   const isTrackedConsist = vehicle.consist === "430M";
@@ -18594,6 +18618,14 @@ export function Map({
               )}
               {selectedVehiclePatternStops.length > 0 && (
                 <div className="px-3.5 pt-3">
+                  <StopProgressSummary
+                    accent={selectedVehicleAccent}
+                    progress={getStopProgress(
+                      selectedVehiclePatternStops.map((station) => station.name),
+                      selectedVehicleLiveTimelinePosition,
+                      selectedVehicleIsStoppedAtPublishedStop ? selectedVehicleCurrentStopIndex : undefined,
+                    )}
+                  />
                   <button type="button" disabled={selectedVehicleCurrentStopIndex <= 1} onClick={() => setShowPriorStops((value) => !value)} className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-white/75 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45">
                     {showPriorStops ? "Hide prior stops" : selectedVehicleCurrentStopIndex > 1 ? `Show ${selectedVehicleCurrentStopIndex - 1} prior stops` : "No hidden prior stops"}
                   </button>
@@ -18686,8 +18718,10 @@ export function Map({
                       className={`grid grid-cols-[4.25rem_1.25rem_minmax(0,1fr)] gap-2.5 ${isPassed ? "opacity-45" : ""}`}
                     >
                       <div className="py-3 text-right">
-                        <p className={`text-sm font-semibold ${isCurrent ? "text-white" : "text-white/70"}`}>{arrivalTime || (publishedTime ? formatRouteWindow(publishedTime) : scheduledArrival || (isCurrent ? "Now" : "Time TBC"))}</p>
-                        {(departureTime && departureTime !== arrivalTime) || (scheduledDeparture && scheduledDeparture !== scheduledArrival) ? (
+                        {/* A trip's first stop has only a departure time: show it as the
+                            row's time rather than "Time TBC" above a separate "dep" line. */}
+                        <p className={`text-sm font-semibold ${isCurrent ? "text-white" : "text-white/70"}`}>{arrivalTime || departureTime || (publishedTime ? formatRouteWindow(publishedTime) : scheduledArrival || scheduledDeparture || (isCurrent ? "Now" : "Time TBC"))}</p>
+                        {(arrivalTime && departureTime && departureTime !== arrivalTime) || (scheduledArrival && scheduledDeparture && scheduledDeparture !== scheduledArrival) ? (
                           <p className="text-xs font-semibold text-white/55">{departureTime || scheduledDeparture} dep</p>
                         ) : null}
                         <p className="mt-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-white/35">
@@ -19055,6 +19089,10 @@ export function Map({
 
             {selectedTramStops.length ? (
               <div className="max-h-[23rem] overflow-y-auto px-3 py-2">
+                <StopProgressSummary
+                  accent="#00ab8e"
+                  progress={getStopProgress(selectedTramStops.map((stop) => stop.name), selectedTramLiveTimelinePosition)}
+                />
                 <button type="button" disabled={selectedTramCurrentStopIndex <= 1} onClick={() => setShowPriorStops((value) => !value)} className="my-2 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-white/75 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45">
                   {showPriorStops ? "Hide prior stops" : selectedTramCurrentStopIndex > 1 ? `Show ${selectedTramCurrentStopIndex - 1} prior stops` : "No hidden prior stops"}
                 </button>
@@ -19273,6 +19311,10 @@ export function Map({
               </p>
             ) : selectedBusTrip?.stops.length ? (
               <div className="mt-3">
+                <StopProgressSummary
+                  accent="#f97316"
+                  progress={getStopProgress(selectedBusTrip.stops.map((stop) => stop.name), selectedBusLiveTimelinePosition)}
+                />
                 <button type="button" disabled={selectedBusCurrentStopIndex <= 1} onClick={() => setShowPriorStops((value) => !value)} className="mb-3 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-white/75 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45">
                   {showPriorStops ? "Hide prior stops" : selectedBusCurrentStopIndex > 1 ? `Show ${selectedBusCurrentStopIndex - 1} prior stops` : "No hidden prior stops"}
                 </button>

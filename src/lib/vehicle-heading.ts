@@ -7,7 +7,18 @@ export function validVehicleHeading(heading?: number): number | undefined {
     : undefined;
 }
 
-const stationKey = (name: string) => name.toLowerCase().replace(/\bstation\b/g, "").replace(/\s+/g, " ").trim();
+/** A train that has just reversed at a platform keeps reporting its arrival
+ * bearing until it moves. When the feed points more than 90° away from the
+ * track toward the destination, the track direction is the one to trust. */
+export function resolveVehicleHeading(feedHeading: number | undefined, trackHeading: number | undefined): number | undefined {
+  const feed = validVehicleHeading(feedHeading);
+  if (trackHeading === undefined) return feed;
+  if (feed === undefined) return trackHeading;
+  const difference = Math.abs(((feed - trackHeading) % 360 + 540) % 360 - 180);
+  return difference > 90 ? trackHeading : feed;
+}
+
+const stationKey =(name: string) => name.toLowerCase().replace(/\bstation\b/g, "").replace(/\s+/g, " ").trim();
 
 /** Infer a local track bearing only when the destination identifies its direction.
  * Up/down are railway operating directions, not compass directions. */

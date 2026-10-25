@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { inferVehicleHeading, validVehicleHeading } from "./vehicle-heading.ts";
+import { inferVehicleHeading, resolveVehicleHeading, validVehicleHeading } from "./vehicle-heading.ts";
 
 const stops = [
   { name: "City Station", position: [-37.8, 144.9] as const },
@@ -50,4 +50,15 @@ test("north is a valid live bearing; invalid readings cannot become north", () =
   assert.equal(validVehicleHeading(360), 0);
   assert.equal(validVehicleHeading(270), 270);
   for (const heading of [undefined, NaN, Infinity, -1, 361]) assert.equal(validVehicleHeading(heading), undefined);
+});
+
+test("a train stopped after reversing follows the track, not its stale arrival bearing", () => {
+  // Arrived heading east (90); now departing west (270) toward the city.
+  assert.equal(resolveVehicleHeading(90, 270), 270);
+  // A feed bearing that broadly agrees with the track is kept for precision.
+  assert.equal(resolveVehicleHeading(250, 270), 250);
+  assert.equal(resolveVehicleHeading(355, 10), 355);
+  assert.equal(resolveVehicleHeading(undefined, 180), 180);
+  assert.equal(resolveVehicleHeading(45, undefined), 45);
+  assert.equal(resolveVehicleHeading(NaN, undefined), undefined);
 });

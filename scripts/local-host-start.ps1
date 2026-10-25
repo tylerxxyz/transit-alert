@@ -25,11 +25,14 @@ New-Item -ItemType Directory -Path $hostDir -Force | Out-Null
 
 if (!(Test-Path $configPath)) {
   $secret = [guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N")
+  # A fresh random admin password per install, never a shared default.
+  $adminPassword = [guid]::NewGuid().ToString("N").Substring(0, 20)
+  Write-Output "Created $configPath with a new admin password: $adminPassword"
   $config = @"
 `$HostConfig = @{
   Port = 3200
   AdminUsername = "tyler"
-  AdminPassword = "AppleJuice"
+  AdminPassword = "$adminPassword"
   AuthSessionSecret = "$secret"
   AllowedOrigins = @(
     "http://localhost:3000",

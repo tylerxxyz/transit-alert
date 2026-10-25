@@ -1,3 +1,4 @@
+import { feedBearing } from "../_lib/vehicle-bearing.js";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -243,7 +244,7 @@ function buildPtvLiveBuses(feed, headsignIndex) {
         stopSequence: toNumber(vehicle.currentStopSequence),
         status: "live",
         timestamp: timestamp ? new Date(timestamp * 1000).toISOString() : undefined,
-        heading: typeof position.bearing === "number" ? position.bearing : undefined,
+        heading: feedBearing(position),
         operator: identity?.operator || BUS_ROUTE_OPERATORS[route] || "PTV contracted bus service",
       };
     })

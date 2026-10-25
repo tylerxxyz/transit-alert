@@ -144,9 +144,14 @@ async function getSubscriptionsForCategory(categoryId) {
 // never set this preference, notificationLines === null) is never filtered
 // out by this — same "can never silently mute anyone by default" contract
 // as the category filter.
-function filterSubscriptionsByLines(subscriptions, alertLines) {
+// "All lines" (network-wide/station notices) and the bare "Metro" fallback
+// name no specific line, so they must reach line-filtered subscribers too.
+const NETWORK_WIDE_LINE_TAGS = /^(all lines|metro)$/i;
+
+export function filterSubscriptionsByLines(subscriptions, alertLines) {
   const wantedLines = Array.isArray(alertLines) ? alertLines.filter((line) => typeof line === "string" && line.trim()) : [];
   if (wantedLines.length === 0) return subscriptions;
+  if (wantedLines.some((line) => NETWORK_WIDE_LINE_TAGS.test(line.trim()))) return subscriptions;
   return subscriptions.filter((subscription) => {
     const preferredLines = subscription.notificationLines;
     if (!Array.isArray(preferredLines)) return true;

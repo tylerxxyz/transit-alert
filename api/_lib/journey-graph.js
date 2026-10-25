@@ -183,10 +183,17 @@ function addStopSequenceEdges(nodes, adjacency, modeKey, displayMode, mode, stop
 // stop is frequently named after the street/cross-street instead. Record it
 // as a searchable alias for that trip's last stop so typing the public
 // destination name still resolves, alongside the real stop names.
+// Rail replacement buses/coaches are scheduled under the train feeds but only
+// run on specific closure dates. This graph ignores service dates, so keeping
+// them would route every rider onto a replacement bus that usually isn't
+// running (and label it a train). Live notices cover them when they are.
+const RAIL_REPLACEMENT_ROUTE = /replacement (?:bus|coach)|rail replacement/i;
+
 function addPatternEdges(nodes, adjacency, modeKey, displayMode, mode, patterns, destinationAliases) {
   for (const { trip, stopTimes } of patterns.values()) {
     const route = mode.routes.get(trip.routeId);
     const routeLabel = String(route?.shortName || route?.longName || trip.routeId || displayMode).trim();
+    if (displayMode === "train" && RAIL_REPLACEMENT_ROUTE.test(`${route?.shortName ?? ""} ${route?.longName ?? ""} ${routeLabel}`)) continue;
     addStopSequenceEdges(
       nodes, adjacency, modeKey, displayMode, mode, stopTimes,
       `${modeKey}:${trip.routeId}:${trip.directionId}`, routeLabel, trip.destination, trip.shapeId,
@@ -579,9 +586,13 @@ export async function planJourney({ originName, originLat, originLng, destinatio
   if (destinationCandidates.length === 0) return { found: false, reason: "destination-not-found" };
 
   const destinationNodeIds = destinationCandidates.map((candidate) => candidate.nodeId);
-  if (sources.some((source) => destinationNodeIds.includes(source.nodeId))) {
-    const stop = toStopSummary(graph.nodes.get(sources[0].nodeId));
-    return { found: true, alreadyThere: true, legs: [], stops: stop ? [stop] : [] };
+  // Report the destination stop that matched (not simply the nearest origin
+  // candidate) and how far it is: a current-location origin considers stops
+  // up to ORIGIN_SEARCH_RADIUS_METRES away, so "already there" can be a walk.
+  const destinationSource = sources.find((source) => destinationNodeIds.includes(source.nodeId));
+  if (destinationSource) {
+    const stop = toStopSummary(graph.nodes.get(destinationSource.nodeId));
+    return { found: true, alreadyThere: true, legs: [], stops: stop ? [stop] : [], walkFromOriginSeconds: destinationSource.walkSeconds || 0 };
   }
 
   const result = findPath(graph, sources, destinationNodeIds);

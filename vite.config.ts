@@ -1262,6 +1262,12 @@ function buildMetroAlerts(feed: Awaited<ReturnType<typeof fetchFeed>>) {
     .filter(Boolean);
 }
 
+function devAdminPassword() {
+  const password = globalThis.crypto.randomUUID();
+  console.warn(`[dev] ADMIN_PASSWORD not set; using a temporary admin password for this run: ${password}`);
+  return password;
+}
+
 function ptvRealtimePlugin(runtimeConfig: RuntimeConfig): Plugin {
   const { adminPassword, adminUsername, ptvSubscriptionKey, telegramBotToken, trackedConsists } = runtimeConfig;
   const accountStore = new Map<string, AccountRecord>([
@@ -1718,7 +1724,8 @@ export default defineConfig(async ({ mode }) => {
       process.env.TELEGRAM_BOT_TOKEN ||
       process.env.BOT_TOKEN,
     adminUsername: env.ADMIN_USERNAME || process.env.ADMIN_USERNAME || "tyler",
-    adminPassword: env.ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || "AppleJuice",
+    // Dev-only: a random per-run password (printed below) instead of a published default.
+    adminPassword: env.ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || devAdminPassword(),
     trackedConsists: (env.TRACKED_CONSISTS || process.env.TRACKED_CONSISTS || "430M")
       .split(",")
       .map((value) => value.trim().toUpperCase())
