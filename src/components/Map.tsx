@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useState, useCallback, useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { formatRelativeTime } from "@/lib/relative-time";
 import {
   MapContainer,
   TileLayer,
@@ -13,7 +14,6 @@ import {
   Pane,
 } from "react-leaflet";
 import L from "leaflet";
-import { formatDistanceToNow } from "date-fns";
 import { useGetReports } from "@/lib/api-client-react/src/generated/api";
 import type { Report } from "@/lib/api-client-react/src/generated/api.schemas";
 import smartbusIcon from "@/assets/icons/smartbus.svg";
@@ -1259,10 +1259,10 @@ function createLiveTrainIcon(
           opacity:${labelOpacity};
         ">
           <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:${isTrackedConsist ? "9px" : isExpanded ? "8px" : "7px"};font-weight:800;letter-spacing:${isExpanded ? "0.03em" : "0.08em"};text-transform:uppercase;">
-            ${badgePrimaryLabel}
+            ${escapeInlineMarkerHtml(badgePrimaryLabel)}
           </div>
           ${isExpanded && !hideSecondaryLabel
-            ? `<div style="margin-top:3px;font-size:${isTrackedConsist ? "8px" : "7px"};font-weight:700;opacity:0.78;letter-spacing:0.08em;text-transform:uppercase;">${badgeSecondaryLabel}</div>`
+            ? `<div style="margin-top:3px;font-size:${isTrackedConsist ? "8px" : "7px"};font-weight:700;opacity:0.78;letter-spacing:0.08em;text-transform:uppercase;">${escapeInlineMarkerHtml(badgeSecondaryLabel)}</div>`
             : ""}
         </div>
         ${hideSecondaryLabel
@@ -10379,9 +10379,16 @@ function useAllBusStops(shouldLoad: boolean): SurfaceStop[] {
   useEffect(() => {
     if (!shouldLoad || hasLoaded.current) return;
     hasLoaded.current = true;
-    import("@/lib/generated-bus-stops").then(({ GENERATED_ALL_BUS_STOPS }) => {
-      setStops(buildAllBusStopsAsSurfaceStops(GENERATED_ALL_BUS_STOPS));
-    });
+    import("@/lib/generated-bus-stops")
+      .then(({ GENERATED_ALL_BUS_STOPS }) => {
+        setStops(buildAllBusStopsAsSurfaceStops(GENERATED_ALL_BUS_STOPS));
+      })
+      .catch((error) => {
+        // A chunk that fails to load (e.g. right after a deploy) used to leave
+        // bus stops empty for the whole session; allow the next render to retry.
+        console.warn("[map] Bus stops failed to load", error);
+        hasLoaded.current = false;
+      });
   }, [shouldLoad]);
   return stops;
 }
@@ -13179,7 +13186,7 @@ function createDebugPointIcon(label: string, color: string) {
         font-weight:700;
         box-shadow:0 4px 10px rgba(0,0,0,0.45);
       ">
-        ${label}
+        ${escapeInlineMarkerHtml(label)}
       </div>
     `,
     className: "bg-transparent border-none",
@@ -15078,6 +15085,9 @@ export function Map({
   } = useQuery({
     queryKey: ["/api/ptv/live-trams", viewportBoundsQuery],
     queryFn: () => fetchLiveTrams(viewportBoundsQuery),
+    // Each viewport is a new cache key; keep showing the previous trams
+    // while the new area loads instead of every tram blinking out per pan.
+    placeholderData: keepPreviousData,
     enabled:
       transportModes.includes("tram") &&
       allowMobileHeavySurfaceTracking,
@@ -15189,10 +15199,18 @@ export function Map({
     if (!isValidLatLng(selectedFollowTarget.lat, selectedFollowTarget.lng)) return;
     setFollowSelectedService(true);
     const map = mapRef.current;
-    map.once("moveend", () => {
-      keepTrackedVehicleInVisibleMap(selectedFollowTarget.lat, selectedFollowTarget.lng, true);
-    });
+    // Removed on cleanup: picking another vehicle mid-fly used to leave this
+    // handler behind, and it then panned back to the first vehicle.
+    const handleMoveEnd = () => {
+      const target = selectedFollowTargetRef.current;
+      if (!target || !isValidLatLng(target.lat, target.lng)) return;
+      keepTrackedVehicleInVisibleMap(target.lat, target.lng, true);
+    };
+    map.once("moveend", handleMoveEnd);
     safeFlyTo(map, selectedFollowTarget.lat, selectedFollowTarget.lng, Math.max(map.getZoom(), 15), { animate: true, duration: 0.75 });
+    return () => {
+      map.off("moveend", handleMoveEnd);
+    };
   }, [keepTrackedVehicleInVisibleMap, selectedFollowIdentity]);
 
   // A one-off effect keyed on lat/lng can miss corrections if a render is
@@ -16124,6 +16142,8 @@ export function Map({
     };
   }, []);
 
+  const focusedVehicleKeyRef = useRef(focusedVehicleKey);
+  focusedVehicleKeyRef.current = focusedVehicleKey;
   useEffect(() => {
     if (!focusedVehicleKey) return;
 
@@ -16141,11 +16161,32 @@ export function Map({
       }
       if (focusedVehicleKey.startsWith("tram:")) {
         const requestedTripId = focusedVehicleKey.slice("tram:".length);
+        const focusTram = (tram: LiveTram) => {
+          setSelectedDetail({ type: "tram", tram });
+          safeFlyTo(mapRef.current, tram.lat, tram.lng, Math.max(mapRef.current?.getZoom() ?? 13, 14), { animate: true, duration: 0.85 });
+        };
         const tram = liveTrams.find((candidate) => (candidate.tripId ?? candidate.id) === requestedTripId);
-        if (!tram) return;
-        setSelectedDetail({ type: "tram", tram });
-        safeFlyTo(mapRef.current, tram.lat, tram.lng, Math.max(mapRef.current?.getZoom() ?? 13, 14), { animate: true, duration: 0.85 });
-        onFocusedVehicleHandled?.();
+        if (tram) {
+          focusTram(tram);
+          onFocusedVehicleHandled?.();
+          return;
+        }
+        // liveTrams only holds the current viewport, so a tram tracked from
+        // the Fleet Tracker while off screen was never found: look it up in
+        // the full fleet, and mark the request handled either way so it
+        // can't fire later when the tram happens to drift into view.
+        const requestedKey = focusedVehicleKey;
+        const isStillRequested = () => focusedVehicleKeyRef.current === requestedKey;
+        void fetchLiveTrams()
+          .then((allTrams) => {
+            if (!isStillRequested()) return;
+            const match = allTrams.find((candidate) => (candidate.tripId ?? candidate.id) === requestedTripId);
+            if (match) focusTram(match);
+          })
+          .catch(() => undefined)
+          .finally(() => {
+            if (isStillRequested()) onFocusedVehicleHandled?.();
+          });
         return;
       }
 
@@ -17625,7 +17666,6 @@ export function Map({
               zIndexOffset={isSelected ? 3100 : labelledLiveBusIds.has(bus.id) ? 1500 : 1000}
               riseOnHover
               eventHandlers={{
-                mousedown: () => setSelectedDetail({ type: "bus", bus }),
                 click: () => setSelectedDetail({ type: "bus", bus }),
                 popupopen: () => setSelectedDetail({ type: "bus", bus }),
               }}
@@ -17682,7 +17722,7 @@ export function Map({
                   </div>
                   <p className="mt-2 text-xs text-white/55">
                     {bus.timestamp
-                      ? `Last reported ${formatDistanceToNow(new Date(bus.timestamp), { addSuffix: true })}`
+                      ? `Last reported ${formatRelativeTime(bus.timestamp)}`
                       : "Live feed timestamp unavailable"}
                   </p>
                 </div>
@@ -17699,8 +17739,6 @@ export function Map({
               zIndexOffset={1100}
               riseOnHover
               eventHandlers={{
-                mousedown: () => setSelectedDetail({ type: "tram", tram }),
-                touchstart: () => setSelectedDetail({ type: "tram", tram }),
                 click: () => setSelectedDetail({ type: "tram", tram }),
                 popupopen: () => setSelectedDetail({ type: "tram", tram }),
               }}
@@ -17723,7 +17761,7 @@ export function Map({
                   <p className="mt-2 text-sm text-white/85">{tram.destination ?? "Live vehicle position"}</p>
                   <p className="mt-2 text-xs text-white/55">
                     {tram.timestamp
-                      ? `Last reported ${formatDistanceToNow(new Date(tram.timestamp), { addSuffix: true })}`
+                      ? `Last reported ${formatRelativeTime(tram.timestamp)}`
                       : "Live feed timestamp unavailable"}
                   </p>
                 </div>
@@ -17839,9 +17877,7 @@ export function Map({
                         {REPORT_LABEL[report.reportType]}
                       </p>
                       <p className="text-[11px] text-white/40">
-                        {formatDistanceToNow(new Date(report.createdAt), {
-                          addSuffix: true,
-                        })}
+                        {formatRelativeTime(report.createdAt)}
                       </p>
                     </div>
                     <span
@@ -19065,7 +19101,7 @@ export function Map({
             <div className="rounded-xl border border-white/10 bg-white/5 p-2.5">
               <p className="uppercase tracking-[0.16em] text-white/40">Position</p>
               <p className="mt-1 font-semibold text-emerald-100">
-                {selectedDetail.tram.timestamp ? formatDistanceToNow(new Date(selectedDetail.tram.timestamp), { addSuffix: true }) : "Live"}
+                {selectedDetail.tram.timestamp ? formatRelativeTime(selectedDetail.tram.timestamp) : "Live"}
               </p>
             </div>
           </div>
@@ -19362,7 +19398,7 @@ export function Map({
 
             <p className="mt-3 text-[10px] leading-4 text-white/40">
               {selectedBusTrip?.realtimeFeedAt
-                ? `Realtime feed ${formatDistanceToNow(new Date(selectedBusTrip.realtimeFeedAt), { addSuffix: true })}. `
+                ? `Realtime feed ${formatRelativeTime(selectedBusTrip.realtimeFeedAt)}. `
                 : ""}
               {selectedBusTrip?.source ?? "Transport Victoria GTFS-Realtime"}
             </p>
@@ -19929,7 +19965,7 @@ export function Map({
 
                 <p className="mt-3 text-[10px] leading-4 text-white/40">
                   {selectedStationDepartures?.realtimeFeedAt
-                    ? `Realtime feed ${formatDistanceToNow(new Date(selectedStationDepartures.realtimeFeedAt), { addSuffix: true })}. `
+                    ? `Realtime feed ${formatRelativeTime(selectedStationDepartures.realtimeFeedAt)}. `
                     : ""}
                   {selectedStationDepartures?.scheduleUpdatedAt
                     ? `Schedule file checked ${new Date(selectedStationDepartures.scheduleUpdatedAt).toLocaleDateString("en-AU")}. `
@@ -20574,9 +20610,7 @@ export function Map({
                                   {stop.locality}
                                   {isCurrent
                                     ? selectedSurfaceBusLeadVehicle?.bus.timestamp
-                                      ? ` · Updated ${formatDistanceToNow(new Date(selectedSurfaceBusLeadVehicle.bus.timestamp), {
-                                          addSuffix: true,
-                                        })}`
+                                      ? ` · Updated ${formatRelativeTime(selectedSurfaceBusLeadVehicle.bus.timestamp)}`
                                       : " · Live position"
                                     : isSelectedStop
                                       ? " · Selected stop"
@@ -20604,7 +20638,7 @@ export function Map({
                             <p className="mt-1 text-xs text-white/55">
                               {formatDistanceLabel(distanceMetres)}
                               {bus.timestamp
-                                ? ` · Updated ${formatDistanceToNow(new Date(bus.timestamp), { addSuffix: true })}`
+                                ? ` · Updated ${formatRelativeTime(bus.timestamp)}`
                                 : ""}
                             </p>
                           </div>
@@ -20663,7 +20697,7 @@ export function Map({
                             <p className="mt-1 text-xs text-white/55">
                               {formatDistanceLabel(distanceMetres)}
                               {tram.timestamp
-                                ? ` · Last reported ${formatDistanceToNow(new Date(tram.timestamp), { addSuffix: true })}`
+                                ? ` · Last reported ${formatRelativeTime(tram.timestamp)}`
                                 : ""}
                             </p>
                           </div>

@@ -177,6 +177,7 @@ type FleetTypeKey =
   | "oscar"
   | "sydney-trains-unclassified"
   | "mariyung"
+  | "v-set"
   | "endeavour"
   | "hunter"
   | "xplorer"
@@ -315,6 +316,7 @@ const FLEET_TYPES: FleetTypeConfig[] = [
   { key: "oscar", label: "Oscar (H Set)", emoji: "Train", total: 0 },
   { key: "sydney-trains-unclassified", label: "Sydney Trains", emoji: "Train", total: 0 },
   { key: "mariyung", label: "Mariyung (D Set)", emoji: "Train", total: 0 },
+  { key: "v-set", label: "V Set", emoji: "Train", total: 0 },
   { key: "endeavour", label: "Endeavour", emoji: "Train", total: 0 },
   { key: "hunter", label: "Hunter", emoji: "Train", total: 0 },
   { key: "xplorer", label: "Xplorer", emoji: "Train", total: 0 },
@@ -363,6 +365,7 @@ const FLEET_FILTER_GROUPS: FleetFilterGroup[] = [
     label: "NSW TrainLink",
     filters: [
       { key: "mariyung", label: "Mariyung (D Set)" },
+      { key: "v-set", label: "V Set" },
       { key: "endeavour", label: "Endeavour" },
       { key: "hunter", label: "Hunter" },
       { key: "xplorer", label: "Xplorer" },
@@ -1855,13 +1858,17 @@ function JourneyArrivalTime({ mode, tripId, destinationStopName }: { mode: "bus"
   if (isLoading) {
     return <p className="mt-1 text-xs text-white/45">Checking arrival time…</p>;
   }
-  if (!arrivalTime) {
+  // The trip feeds type this loosely; only a real string or number time is
+  // usable, and an unparseable one is treated as "no arrival time".
+  const arrivalDate =
+    typeof arrivalTime === "string" || typeof arrivalTime === "number" ? new Date(arrivalTime) : null;
+  if (!arrivalDate || Number.isNaN(arrivalDate.getTime())) {
     return null;
   }
 
   return (
     <p className="mt-1 text-xs font-semibold text-blue-100">
-      Arrive ~{new Date(arrivalTime).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} at {destinationStopName}
+      Arrive ~{arrivalDate.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} at {destinationStopName}
     </p>
   );
 }
@@ -2691,6 +2698,9 @@ export default function Home() {
         setPreferences(merged);
         writeLocalPreferences(merged);
       })
+      // A failed merge keeps the local copy; it must not surface as an
+      // unhandled rejection.
+      .catch((error) => console.warn("[preferences] Merge failed", error))
       .finally(() => setHasMergedLocalPreferences(true));
   }, [authSession?.user?.id, hasMergedLocalPreferences, isAuthenticated, isGuest]);
 
@@ -3081,47 +3091,32 @@ export default function Home() {
     [isAuthenticated, isGuest],
   );
 
-  useEffect(() => {
-    const currentModes = Array.isArray(preferences.transportModes) ? preferences.transportModes : [];
-    const appPreferences = preferences.appPreferences ?? {};
-    const hasMigratedTransportModes = appPreferences.transportModesMigrated === true;
-
-    if (hasMigratedTransportModes) {
-      return;
-    }
-
-    const isLegacyTrainOnly = currentModes.length === 1 && currentModes[0] === "train";
-    const hasInvalidModes = currentModes.length === 0;
-
-    if (isLegacyTrainOnly || hasInvalidModes) {
-      updatePreferences({
-        transportModes: [...DEFAULT_TRANSPORT_MODES],
-        appPreferences: {
-          ...appPreferences,
-          transportModesMigrated: true,
-        },
-      });
-      return;
-    }
-
-    updatePreferences({
-      appPreferences: {
-        ...appPreferences,
-        transportModesMigrated: true,
-      },
-    });
-  }, [preferences.appPreferences, preferences.transportModes, updatePreferences]);
-
+  // One effect for both migrations. As two effects they ran in the same
+  // commit against the same snapshot, and the second save replaced the
+  // first, so a legacy train-only user lost V/Line and an empty-modes user
+  // ended up with no trains at all.
   useEffect(() => {
     const appPreferences = preferences.appPreferences ?? {};
-    if (appPreferences.surfaceModesMigrated === true) return;
+    const needsModesMigration = appPreferences.transportModesMigrated !== true;
+    const needsSurfaceMigration = appPreferences.surfaceModesMigrated !== true;
+    if (!needsModesMigration && !needsSurfaceMigration) return;
 
-    const currentModes = Array.isArray(preferences.transportModes) ? preferences.transportModes : [];
-    const nextModes = [...new Set([...currentModes, "tram", "bus"])] as TransportMode[];
+    let nextModes = (Array.isArray(preferences.transportModes) ? preferences.transportModes : []) as TransportMode[];
+    if (needsModesMigration) {
+      const isLegacyTrainOnly = nextModes.length === 1 && nextModes[0] === "train";
+      if (isLegacyTrainOnly || nextModes.length === 0) {
+        nextModes = [...DEFAULT_TRANSPORT_MODES];
+      }
+    }
+    if (needsSurfaceMigration) {
+      nextModes = [...new Set([...nextModes, "tram", "bus"])] as TransportMode[];
+    }
+
     updatePreferences({
       transportModes: nextModes,
       appPreferences: {
         ...appPreferences,
+        transportModesMigrated: true,
         surfaceModesMigrated: true,
       },
     });
@@ -3147,18 +3142,26 @@ export default function Home() {
     });
   }, [splitCrossCityGroup]);
 
+  // The map split each V/Line corridor flag ("geelongRegional") into one
+  // flag per named line; the planner chips still read and wrote the old
+  // keys, so they always showed off and toggled nothing.
+  const REGIONAL_GROUP_LINES = {
+    geelongRegionalGroup: ["geelongLine", "warrnamboolLine"],
+    ballaratRegionalGroup: ["ballaratLine", "araratLine", "maryboroughLine"],
+    bendigoRegionalGroup: ["bendigoLine", "echucaLine", "swanHillLine"],
+    seymourRegionalGroup: ["seymourLine", "sheppartonLine", "alburyLine"],
+    traralgonRegionalGroup: ["traralgonLine", "bairnsdaleLine"],
+  } as const satisfies Record<string, readonly (keyof LayerState)[]>;
+
   const isPlannerFilterActive = (filter: ServiceFilterKey) => {
     switch (filter) {
       case "geelongRegionalGroup":
-        return (preferences.transportModes as TransportMode[]).includes("vline") && Boolean(layerState.geelongRegional);
       case "ballaratRegionalGroup":
-        return (preferences.transportModes as TransportMode[]).includes("vline") && Boolean(layerState.ballaratRegional);
       case "bendigoRegionalGroup":
-        return (preferences.transportModes as TransportMode[]).includes("vline") && Boolean(layerState.bendigoRegional);
       case "seymourRegionalGroup":
-        return (preferences.transportModes as TransportMode[]).includes("vline") && Boolean(layerState.seymourRegional);
       case "traralgonRegionalGroup":
-        return (preferences.transportModes as TransportMode[]).includes("vline") && Boolean(layerState.traralgonRegional);
+        return (preferences.transportModes as TransportMode[]).includes("vline") &&
+          REGIONAL_GROUP_LINES[filter].some((key) => Boolean(layerState[key]));
       case "metroTunnelServices":
         return Boolean(layerState.metroTunnel || layerState.sunburyLine || layerState.cranbourneLine || layerState.pakenhamLine);
       case "crossCityPink":
@@ -3205,20 +3208,15 @@ export default function Home() {
 
     switch (filter) {
       case "geelongRegionalGroup":
-        next = { ...prev, geelongRegional: shouldForceShowRegional ? true : !Boolean(prev.geelongRegional) };
-        break;
       case "ballaratRegionalGroup":
-        next = { ...prev, ballaratRegional: shouldForceShowRegional ? true : !Boolean(prev.ballaratRegional) };
-        break;
       case "bendigoRegionalGroup":
-        next = { ...prev, bendigoRegional: shouldForceShowRegional ? true : !Boolean(prev.bendigoRegional) };
-        break;
       case "seymourRegionalGroup":
-        next = { ...prev, seymourRegional: shouldForceShowRegional ? true : !Boolean(prev.seymourRegional) };
+      case "traralgonRegionalGroup": {
+        const lines = REGIONAL_GROUP_LINES[filter];
+        const nextValue = shouldForceShowRegional ? true : !lines.some((key) => Boolean(prev[key]));
+        next = { ...prev, ...Object.fromEntries(lines.map((key) => [key, nextValue])) };
         break;
-      case "traralgonRegionalGroup":
-        next = { ...prev, traralgonRegional: shouldForceShowRegional ? true : !Boolean(prev.traralgonRegional) };
-        break;
+      }
       case "metroTunnelServices": {
         const nextValue = !Boolean(prev.metroTunnel);
         next = {

@@ -1,3 +1,4 @@
+import { consumeAuthRateLimit, readJsonBody } from "../_lib/auth.js";
 import { createReportRepository } from "../_lib/report-repository.js";
 
 const melbourneDay = new Intl.DateTimeFormat("en-CA", {
@@ -59,6 +60,20 @@ export function createReportsHandler(repository) {
       return res.status(405).json({ error: "Method not allowed" });
     }
     if (req.method === "POST") {
+      // Only the Netlify adapter pre-parses req.body; on the Node server it
+      // was always undefined, so every report was rejected as invalid.
+      if (req.body === undefined) {
+        try {
+          req.body = await readJsonBody(req);
+        } catch {
+          return res.status(400).json({ error: "Report must be valid JSON" });
+        }
+      }
+      const limit = consumeAuthRateLimit(req, "reports", { limit: 10, windowMs: 10 * 60 * 1000 });
+      if (!limit.allowed) {
+        res.setHeader?.("Retry-After", String(limit.retryAfterSeconds));
+        return res.status(429).json({ error: "Too many reports. Please wait a moment and try again." });
+      }
       const error = validateReport(req.body);
       if (error) return res.status(400).json({ error });
     }

@@ -71,43 +71,55 @@ function extractAlertCode(value: string) {
   return match?.[1]?.toUpperCase() ?? null;
 }
 
-function inferExtraAlertLines(title: string, summary: string) {
+// Whole-word place matches: plain substrings let "Hampton Park" (Cranbourne
+// area) add the Sandringham Line via "hampton".
+function mentionsPlace(searchable: string, place: string) {
+  // Places are plain words, so no regex escaping is needed. The lookahead
+  // skips neighbouring suburbs and roads that share the name.
+  return new RegExp(`\\b${place}\\b(?!\\s+(?:park|north|south|east|west|road|rd)\\b)`, "i").test(searchable);
+}
+
+function inferExtraAlertLines(title: string, summary: string, mode?: unknown) {
   const searchable = `${title} ${summary}`.toLowerCase();
   const inferred = new Set<string>();
   const alertCode = extractAlertCode(title);
   if (alertCode && ALERT_CODE_LINE_MAP[alertCode]) {
     inferred.add(ALERT_CODE_LINE_MAP[alertCode]);
   }
+  // A bus or tram alert that mentions "Box Hill" is not about a train line.
+  if (mode === "bus" || mode === "tram") {
+    return [...inferred];
+  }
 
-  if (searchable.includes("coolaroo") || searchable.includes("craigieburn")) {
+  if (mentionsPlace(searchable, "coolaroo") || mentionsPlace(searchable, "craigieburn")) {
     inferred.add("Craigieburn Line");
   }
-  if (searchable.includes("cheltenham") || searchable.includes("mordialloc") || searchable.includes("frankston")) {
+  if (mentionsPlace(searchable, "cheltenham") || mentionsPlace(searchable, "mordialloc") || mentionsPlace(searchable, "frankston")) {
     inferred.add("Frankston Line");
   }
-  if (searchable.includes("stony point")) {
+  if (mentionsPlace(searchable, "stony point")) {
     inferred.add("Stony Point Line");
   }
-  if (searchable.includes("sandringham") || searchable.includes("brighton beach") || searchable.includes("hampton")) {
+  if (mentionsPlace(searchable, "sandringham") || mentionsPlace(searchable, "brighton beach") || mentionsPlace(searchable, "hampton")) {
     inferred.add("Sandringham Line");
   }
-  if (searchable.includes("holmesglen") || searchable.includes("glen waverley")) {
+  if (mentionsPlace(searchable, "holmesglen") || mentionsPlace(searchable, "glen waverley")) {
     inferred.add("Glen Waverley Line");
   }
   if (
-    searchable.includes("canterbury") ||
-    searchable.includes("camberwell") ||
-    searchable.includes("ringwood") ||
-    searchable.includes("blackburn") ||
-    searchable.includes("box hill")
+    mentionsPlace(searchable, "canterbury") ||
+    mentionsPlace(searchable, "camberwell") ||
+    mentionsPlace(searchable, "ringwood") ||
+    mentionsPlace(searchable, "blackburn") ||
+    mentionsPlace(searchable, "box hill")
   ) {
     inferred.add("Belgrave Line");
     inferred.add("Lilydale Line");
   }
-  if (searchable.includes("alamein")) {
+  if (mentionsPlace(searchable, "alamein")) {
     inferred.add("Alamein Line");
   }
-  if (searchable.includes("watsonia") || searchable.includes("hurstbridge")) {
+  if (mentionsPlace(searchable, "watsonia") || mentionsPlace(searchable, "hurstbridge")) {
     inferred.add("Hurstbridge Line");
   }
 
@@ -125,7 +137,7 @@ function normaliseMetroAlert(raw: Partial<MetroNotifyAlert> & Record<string, unk
         .map((line) => normaliseAlertLine(line))
         .filter((line): line is string => Boolean(line))
     : [];
-  const inferredLines = inferExtraAlertLines(rawTitle, rawSummary);
+  const inferredLines = inferExtraAlertLines(rawTitle, rawSummary, raw.mode);
   const lines = [...new Set([...explicitLines, ...inferredLines])];
 
   return {
@@ -305,7 +317,12 @@ function collapseGenericPlannedWorksWrappers(alerts: MetroNotifyAlert[]) {
         return true;
       }
 
-      return genericSummary.includes(candidateTitle) || genericSummary.includes(candidateSummary);
+      // "".includes check is always true, so an alert with an empty summary
+      // used to delete every generic planned-works alert on its line.
+      return (
+        (candidateTitle.length > 0 && genericSummary.includes(candidateTitle)) ||
+        (candidateSummary.length > 0 && genericSummary.includes(candidateSummary))
+      );
     });
   });
 }
@@ -350,8 +367,11 @@ function collapseSupersededRouteAlerts(alerts: MetroNotifyAlert[]) {
       }
 
       const candidateRoute = extractRouteSignature(candidate.title) ?? extractRouteSignature(candidate.summary);
+      // Same "between X and Y" section is only a supersede when it's the same
+      // kind of alert: a newer "minor delays between Caulfield and Dandenong"
+      // must not hide an older "buses replace trains" for that section.
       if (alertRoute && candidateRoute && alertRoute === candidateRoute) {
-        return true;
+        return alertTheme(alertType) === alertTheme(`${candidate.title} ${candidate.summary}`.toLowerCase());
       }
 
       const candidatePlace = extractAlertPlaceSignature(candidate);
@@ -365,6 +385,14 @@ function collapseSupersededRouteAlerts(alerts: MetroNotifyAlert[]) {
       return samePlace && sameTheme;
     });
   });
+}
+
+function alertTheme(text: string) {
+  if (/buses replace trains|replacement buses|coaches replace/.test(text)) return "replacement";
+  if (/car space|car park|closure|closures|closed|access|parkiteer|lift|escalator/.test(text)) return "access";
+  if (/cancel/.test(text)) return "cancellation";
+  if (/delays?|fault|disruption|suspended/.test(text)) return "delay";
+  return "other";
 }
 
 function dedupeMetroAlerts(alerts: MetroNotifyAlert[]) {
@@ -421,34 +449,73 @@ const ALERT_DATE_PATTERN = new RegExp(`\\b(\\d{1,2})\\s+(${Object.keys(MONTH_NAM
 // ADDITIONAL, purely widening signal: this only ever makes an alert MORE
 // likely to still count as current, never less, so it can't hide something
 // the existing updatedAt-based check would already show.
-function parseAlertActiveWindow(text: string): { start: number; end: number } | null {
+const MELBOURNE_PARTS = new Intl.DateTimeFormat("en-AU", {
+  timeZone: "Australia/Melbourne",
+  hourCycle: "h23",
+  year: "numeric",
+  month: "numeric",
+  day: "numeric",
+  hour: "numeric",
+  minute: "numeric",
+  second: "numeric",
+});
+
+// The UTC timestamp of a Melbourne wall-clock time, whatever the device's
+// own timezone is (and across AEST/AEDT changes).
+function melbourneTimestamp(year: number, month: number, day: number, hour: number, minute: number, second: number) {
+  const wanted = Date.UTC(year, month, day, hour, minute, second);
+  let guess = wanted;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const parts = Object.fromEntries(
+      MELBOURNE_PARTS.formatToParts(new Date(guess)).map((part) => [part.type, Number(part.value)]),
+    );
+    const shown = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+    guess += wanted - shown;
+  }
+  return guess;
+}
+
+function parseAlertActiveWindow(text: string, referenceTime = Date.now()): { start: number; end: number } | null {
   const matches = [...text.matchAll(ALERT_DATE_PATTERN)];
   if (matches.length < 2) return null;
 
-  const toTimestamp = (day: string, monthName: string, year: number) => {
-    const month = MONTH_NAME_INDEX[monthName.toLowerCase()];
-    if (month === undefined) return Number.NaN;
-    return new Date(year, month, Number(day), 23, 59, 59).getTime();
-  };
-
   const first = matches[0];
   const last = matches[matches.length - 1];
-  const year = new Date().getFullYear();
-  const start = toTimestamp(first[1], first[2], year);
-  let end = toTimestamp(last[1], last[2], year);
-  if (Number.isNaN(start) || Number.isNaN(end)) return null;
+  const startMonth = MONTH_NAME_INDEX[first[2].toLowerCase()];
+  const endMonth = MONTH_NAME_INDEX[last[2].toLowerCase()];
+  if (startMonth === undefined || endMonth === undefined) return null;
 
-  // A range that reads as ending before it starts within the same calendar
-  // year almost always means it crosses into next year (e.g. published in
-  // December for early-January works) rather than being malformed.
-  if (end < start) {
-    end = toTimestamp(last[1], last[2], year + 1);
+  // Works start on the first day (night works begin that evening), so the
+  // window opens at midnight rather than 23:59:59, which hid the whole
+  // first night.
+  const startOf = (year: number) => melbourneTimestamp(year, startMonth, Number(first[1]), 0, 0, 0);
+  const endOf = (year: number) => melbourneTimestamp(year, endMonth, Number(last[1]), 23, 59, 59);
+
+  // The notice names no year. Take the year that puts the start closest to
+  // when the alert was published (or now): "28 December to 3 January" read
+  // in January belongs to last December, not this one.
+  const referenceYear = new Date(referenceTime).getUTCFullYear();
+  let startYear = referenceYear;
+  for (const candidate of [referenceYear - 1, referenceYear + 1]) {
+    if (Math.abs(startOf(candidate) - referenceTime) < Math.abs(startOf(startYear) - referenceTime)) {
+      startYear = candidate;
+    }
   }
-  return { start, end };
+  const start = startOf(startYear);
+  let endValue = endOf(startYear);
+  // A range ending before it starts crosses into the next year.
+  if (endValue < start) endValue = endOf(startYear + 1);
+  if (!Number.isFinite(start) || !Number.isFinite(endValue)) return null;
+  return { start, end: endValue };
+}
+
+function alertReferenceTime(alert: MetroNotifyAlert) {
+  const updatedAt = alert.updatedAt ? new Date(alert.updatedAt).getTime() : Number.NaN;
+  return Number.isFinite(updatedAt) ? updatedAt : Date.now();
 }
 
 function isWithinParsedAlertWindow(alert: MetroNotifyAlert, graceMs = 1000 * 60 * 60 * 24) {
-  const window = parseAlertActiveWindow(`${alert.title} ${alert.summary}`);
+  const window = parseAlertActiveWindow(`${alert.title} ${alert.summary}`, alertReferenceTime(alert));
   if (!window) return false;
   const now = Date.now();
   return now >= window.start - graceMs && now <= window.end + graceMs;
@@ -462,7 +529,7 @@ function isWithinParsedAlertWindow(alert: MetroNotifyAlert, graceMs = 1000 * 60 
 // it's affecting their trip right now. A closure announced 10 days ago that
 // runs tonight is not "10 days ago" news, it's active now.
 export function isAlertWindowActiveNow(alert: MetroNotifyAlert) {
-  const window = parseAlertActiveWindow(`${alert.title} ${alert.summary}`);
+  const window = parseAlertActiveWindow(`${alert.title} ${alert.summary}`, alertReferenceTime(alert));
   if (!window) return false;
   const now = Date.now();
   return now >= window.start && now <= window.end;
@@ -470,6 +537,13 @@ export function isAlertWindowActiveNow(alert: MetroNotifyAlert) {
 
 export function isAlertCurrent(alert: MetroNotifyAlert) {
   if (!alert.updatedAt) {
+    return true;
+  }
+
+  // A multi-day closure published before it starts is still current while
+  // its stated dates are running, however old updatedAt is. Without this
+  // the planner and headlines dropped closures mid-way through.
+  if (isWithinParsedAlertWindow(alert)) {
     return true;
   }
 

@@ -18,6 +18,7 @@ import {
   setSessionCookie,
   getSignedSessionToken,
 } from "../_lib/auth.js";
+import { applyCorsHeaders, isCrossSiteWriteBlocked, getPublicAppUrl } from "../_lib/cors.js";
 import { sendPasswordResetEmail, sendWelcomeEmail } from "../_lib/mailer.js";
 
 function isStrongEnoughPassword(password) {
@@ -27,16 +28,14 @@ function isStrongEnoughPassword(password) {
 export default async function handler(req, res) {
   const action = Array.isArray(req.query?.action) ? req.query.action[0] : req.query?.action;
   const USERNAME_PATTERN = /^[a-zA-Z0-9_.-]{3,32}$/;
-  const origin = req.headers?.origin || "https://tylerbnobleday-cmyk.github.io";
-
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Vary", "Origin");
+  applyCorsHeaders(req, res);
 
   if (req.method === "OPTIONS") {
     res.status(204).send("");
+    return;
+  }
+  if (isCrossSiteWriteBlocked(req)) {
+    sendJson(res, 403, { error: "Cross-site request blocked" });
     return;
   }
 
@@ -322,8 +321,10 @@ export default async function handler(req, res) {
 
     const result = await createPasswordResetToken(email).catch(() => null);
     if (result) {
-      const origin = req.headers?.origin || "https://tylerbnobleday-cmyk.github.io";
-      const resetUrl = `${origin}/reset-password?token=${result.token}`;
+      // Built from configuration, never the request's Origin header: an
+      // attacker-supplied Origin turned genuine reset emails into links that
+      // sent the token to the attacker's site.
+      const resetUrl = `${getPublicAppUrl()}/reset-password?token=${encodeURIComponent(result.token)}`;
       sendPasswordResetEmail(result.user, resetUrl).catch(() => {});
     }
     sendJson(res, 200, genericResponse);

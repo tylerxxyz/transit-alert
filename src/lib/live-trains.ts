@@ -68,11 +68,16 @@ type StableTrainRecord = {
   train: LiveTrain;
   feedTime: number;
   seenAt: number;
+  rejectedJumps: number;
 };
 
 const stableTrainRecords = new Map<string, StableTrainRecord>();
 const RETAIN_MISSING_TRAIN_MS = 75_000;
 const MAX_PLAUSIBLE_TRAIN_SPEED_KMH = 220;
+// After this many back-to-back "impossible jump" rejections, the stored fix
+// is the bad one (e.g. a first fix that was a GPS glitch): accept the new one.
+const MAX_CONSECUTIVE_REJECTED_JUMPS = 3;
+const STALE_TRAIN_POSITION_MS = 30 * 60 * 1000;
 
 function getStableTrainIdentity(train: LiveTrain) {
   const consist = train.consist.trim();
@@ -97,12 +102,25 @@ function reconcileTrainSnapshot(trains: LiveTrain[]) {
 
   for (const train of trains) {
     if (!Number.isFinite(train.lat) || !Number.isFinite(train.lng)) continue;
-    if (train.lat < -40 || train.lat > -32 || train.lng < 140 || train.lng > 153) continue;
+    // South-east Australia, wide enough for NSW TrainLink services to
+    // Brisbane, Casino, Grafton, Armidale and Moree (the old -32 cut-off
+    // dropped them north of about Newcastle).
+    if (train.lat < -40 || train.lat > -27 || train.lng < 140 || train.lng > 154) continue;
 
     const identity = getStableTrainIdentity(train);
-    const candidateFeedTime = train.timestamp ? Date.parse(train.timestamp) : now;
-    const feedTime = Number.isFinite(candidateFeedTime) ? candidateFeedTime : now;
+    const parsedFeedTime = train.timestamp ? Date.parse(train.timestamp) : Number.NaN;
     const previous = stableTrainRecords.get(identity);
+
+    // No feed timestamp: there's nothing to order against, and comparing the
+    // client clock with the feed clock rejected real positions as "older".
+    if (!Number.isFinite(parsedFeedTime)) {
+      stableTrainRecords.set(identity, { train, feedTime: previous?.feedTime ?? 0, seenAt: now, rejectedJumps: 0 });
+      snapshot.set(identity, train);
+      continue;
+    }
+    const feedTime = parsedFeedTime;
+    // A position the feed itself dates more than 30 minutes ago is not live.
+    if (now - feedTime > STALE_TRAIN_POSITION_MS) continue;
 
     if (previous && feedTime < previous.feedTime) {
       snapshot.set(identity, previous.train);
@@ -113,14 +131,15 @@ function reconcileTrainSnapshot(trains: LiveTrain[]) {
     if (previous && feedTime > previous.feedTime) {
       const elapsedHours = Math.max((feedTime - previous.feedTime) / 3_600_000, 1 / 3600);
       const speedKmh = coordinateDistanceKm(previous.train, train) / elapsedHours;
-      if (speedKmh > MAX_PLAUSIBLE_TRAIN_SPEED_KMH) {
+      if (speedKmh > MAX_PLAUSIBLE_TRAIN_SPEED_KMH && previous.rejectedJumps < MAX_CONSECUTIVE_REJECTED_JUMPS) {
         snapshot.set(identity, previous.train);
         previous.seenAt = now;
+        previous.rejectedJumps += 1;
         continue;
       }
     }
 
-    stableTrainRecords.set(identity, { train, feedTime, seenAt: now });
+    stableTrainRecords.set(identity, { train, feedTime, seenAt: now, rejectedJumps: 0 });
     snapshot.set(identity, train);
   }
 

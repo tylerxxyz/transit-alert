@@ -21,6 +21,15 @@ export function alertMatchesJourney(alert: MetroNotifyAlert, legs: Leg[]) {
     const label = (leg.title ?? leg.routeLabel ?? "").replace(/\s+line$/i, "").trim();
     if (!label || /^(train|bus|tram|metro)$/i.test(label)) return false;
     const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // A bare route number only counts as "route N" or an exact listed line:
+    // "Platform 1" or "5 minute delays" must not hit tram route 1 or 5.
+    if (/^\d+[a-z]?$/i.test(label)) {
+      return alert.lines.some((line) => line.trim().toLowerCase() === label.toLowerCase()) ||
+        new RegExp(`\\broute\\s+${escaped}\\b`, "i").test(text);
+    }
+    // Metro alerts carry no mode and are about trains, so a named label only
+    // matches a train leg for them.
+    if (!alert.mode && leg.mode !== "train") return false;
     return new RegExp(`\\b${escaped}\\b`, "i").test(text);
   });
 }

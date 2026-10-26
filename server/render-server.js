@@ -27,6 +27,7 @@ import { isPtvV3Configured } from "../api/_lib/ptv-v3.js";
 import reportsHandler from "../api/reports/[[...slug]].js";
 import telegramStatusHandler from "../api/telegram/status.js";
 import { ensureDatabaseReady, isDatabaseConfigured, pglite, pool } from "../src/lib/db/src/index.js";
+import { applyCorsHeaders, isCrossSiteWriteBlocked } from "../api/_lib/cors.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -37,9 +38,24 @@ const GTFS_PATH = process.env.GTFS_SCHEDULE_PATH || path.resolve(__dirname, "../
 const GHOST_TABLES = new Set(["app_users", "user_preferences", "app_config", "marker_overrides", "reports", "chat_messages", "telegram_subscribers", "tracked_consists"]);
 const GHOST_HIDDEN_COLUMNS = new Set(["password_hash"]);
 async function ghostDbQuery(text, params = []) { return pglite ? pglite.query(text, params) : pool ? pool.query(text, params) : { rows: [] }; }
+async function readLimitedJson(req, limit = 64 * 1024) {
+  let raw = "";
+  for await (const chunk of req) { raw += chunk; if (raw.length > limit) throw new Error("Request body too large."); }
+  return JSON.parse(raw || "{}");
+}
 async function ghostDatabaseHandler(req, res, urlObject) {
+  if (!urlObject.pathname.startsWith("/api/ghost-db/")) return false;
+  // A loopback socket address proves nothing here: the Cloudflare tunnel
+  // connects from 127.0.0.1, so every public request looked "local". The
+  // ghost DB API is off unless GHOST_DB_TOKEN is set, needs that token, and
+  // refuses anything that came through a proxy.
   const remote = req.socket.remoteAddress || "";
-  if (!/^(::1|::ffff:127\.0\.0\.1|127\.0\.0\.1)$/.test(remote)) { res.writeHead(403); res.end(JSON.stringify({ error: "Local access only" })); return true; }
+  const proxied = ["cf-connecting-ip", "cf-ray", "x-forwarded-for", "x-real-ip", "forwarded"].some((name) => req.headers[name]);
+  const expected = process.env.GHOST_DB_TOKEN || "";
+  const supplied = Buffer.from(String(req.headers["x-ghost-db-token"] || ""));
+  const expectedBytes = Buffer.from(expected);
+  const tokenOk = expected.length >= 16 && supplied.length === expectedBytes.length && crypto.timingSafeEqual(supplied, expectedBytes);
+  if (proxied || !tokenOk || !/^(::1|::ffff:127\.0\.0\.1|127\.0\.0\.1)$/.test(remote)) { res.writeHead(403, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Forbidden" })); return true; }
   if (req.method === "GET" && urlObject.pathname === "/api/ghost-db/tables") {
     const result = await ghostDbQuery("SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name");
     const tables = result.rows.filter(row => GHOST_TABLES.has(row.table_name));
@@ -47,7 +63,7 @@ async function ghostDatabaseHandler(req, res, urlObject) {
     res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ name: "TransitAlert", tables })); return true;
   }
   if (req.method === "POST" && urlObject.pathname === "/api/ghost-db/reset-password") {
-    let raw = ""; for await (const chunk of req) raw += chunk; const data = JSON.parse(raw || "{}");
+    const data = await readLimitedJson(req);
     const password = String(data.password || ""); if (password.length < 8) throw new Error("Password must be at least 8 characters.");
     const salt = crypto.randomBytes(16).toString("hex"), derived = crypto.scryptSync(password, salt, 64).toString("hex");
     await ghostDbQuery("UPDATE app_users SET password_hash=$1, must_change_password=$2, updated_at=now() WHERE id=$3", [`${salt}:${derived}`, Boolean(data.mustChange), String(data.id || "")]);
@@ -65,7 +81,7 @@ async function ghostDatabaseHandler(req, res, urlObject) {
     res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ table, columns, rows: rows.rows })); return true;
   }
   if (req.method === "PATCH") {
-    let raw = ""; for await (const chunk of req) raw += chunk; const data = JSON.parse(raw || "{}");
+    const data = await readLimitedJson(req);
     const column = columns.find(item => item.column_name === data.column); if (!column) throw new Error("Column cannot be edited.");
     const keysResult = await ghostDbQuery("SELECT a.attname AS name FROM pg_index i JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=ANY(i.indkey) WHERE i.indrelid=$1::regclass AND i.indisprimary", [table]);
     const key = keysResult.rows[0]?.name; if (!key || data.key === undefined) throw new Error("This table has no editable primary key.");
@@ -270,7 +286,16 @@ async function serveSpa(urlObject, res) {
 }
 
 const server = createServer(async (req, res) => {
-  const urlObject = new URL(req.url || "/", `http://${req.headers.host || `127.0.0.1:${PORT}`}`);
+  // A fixed base: a malformed Host header made new URL() throw outside any
+  // try, and the unhandled rejection killed the process.
+  let urlObject;
+  try {
+    urlObject = new URL(req.url || "/", `http://127.0.0.1:${PORT}`);
+  } catch {
+    res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Bad request");
+    return;
+  }
   const isApiRequest = urlObject.pathname.replace(/^\/+/, "").split("/")[0] === "api";
 
   // CORS is only meaningful for cross-origin API calls (e.g. the GitHub Pages
@@ -279,21 +304,16 @@ const server = createServer(async (req, res) => {
   // unnecessary and can confuse strict same-origin fetches like service
   // worker script installation.
   if (isApiRequest) {
-    try {
-      const origin = req.headers.origin || "https://tylerbnobleday-cmyk.github.io";
-      res.setHeader("Access-Control-Allow-Origin", origin);
-      res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-      res.setHeader("Access-Control-Allow-Credentials", "true");
-      res.setHeader("Vary", "Origin");
-
-      if (req.method === "OPTIONS") {
-        res.writeHead(204);
-        res.end();
-        return;
-      }
-    } catch (e) {
-      // Non-fatal: continue to request handling
+    applyCorsHeaders(req, res);
+    if (req.method === "OPTIONS") {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    if (isCrossSiteWriteBlocked(req)) {
+      res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ error: "Cross-site request blocked" }));
+      return;
     }
   }
 
@@ -408,6 +428,9 @@ async function shutdownGracefully(signal) {
   clearTimeout(forceExitTimer);
   process.exit(0);
 }
+process.on("unhandledRejection", (error) => {
+  console.error("[transitalert] Unhandled rejection", error);
+});
 process.on("SIGINT", () => void shutdownGracefully("SIGINT"));
 process.on("SIGTERM", () => void shutdownGracefully("SIGTERM"));
 process.on("SIGHUP", () => void shutdownGracefully("SIGHUP"));

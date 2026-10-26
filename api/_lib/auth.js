@@ -12,6 +12,7 @@ export const ROLE_OPTIONS = [
 ];
 
 const SESSION_COOKIE = "transitalert_session";
+const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const adminUsername = process.env.ADMIN_USERNAME || "admin";
 // No built-in default: the old default was published in git history, so a
 // deployment without ADMIN_PASSWORD would accept it. Admin password login is
@@ -36,7 +37,6 @@ const APPROVED_DEBUG_TESTERS = new Set(
     .map((value) => value.trim())
     .filter(Boolean),
 );
-const FALLBACK_APPROVED_DEBUG_TESTERS = new Set(["Jack Miller", "jackmiller", "jackzilla110", "testdebuger123"]);
 const FALLBACK_USERS = [
   {
     id: "ashton",
@@ -66,40 +66,15 @@ function normalizeTesterAlias(value) {
   return normalizeTesterValue(value).replace(/[^a-z0-9]+/g, "");
 }
 
-function buildTesterCandidateKeys(username, email) {
-  const keys = new Set();
-  const normalizedUsername = normalizeTesterValue(username);
-  const normalizedEmail = normalizeTesterValue(email);
-
-  if (normalizedUsername) {
-    keys.add(normalizedUsername);
-    keys.add(normalizeTesterAlias(normalizedUsername));
-  }
-
-  if (normalizedEmail) {
-    keys.add(normalizedEmail);
-    keys.add(normalizeTesterAlias(normalizedEmail));
-
-    const [emailUser] = normalizedEmail.split("@");
-    if (emailUser) {
-      keys.add(emailUser);
-      keys.add(normalizeTesterAlias(emailUser));
-    }
-  }
-
-  return [...keys].filter(Boolean);
-}
-
+// Exact matches only: an entry containing "@" must equal the email, any
+// other entry must equal the username. Matching on an email's local part or
+// a punctuation-stripped alias let anyone pick an address or username that
+// collided with a (public) tester name and get premium access.
 function approvalEntriesMatch(entries, username, email) {
-  const candidateKeys = buildTesterCandidateKeys(username, email);
-  if (candidateKeys.length === 0) {
-    return false;
-  }
-
   return [...entries].some((entry) => {
     const normalizedEntry = normalizeTesterValue(entry);
-    const aliasEntry = normalizeTesterAlias(entry);
-    return candidateKeys.includes(normalizedEntry) || candidateKeys.includes(aliasEntry);
+    if (!normalizedEntry) return false;
+    return normalizedEntry.includes("@") ? normalizedEntry === email : normalizedEntry === username;
   });
 }
 let cachedDbContext = undefined;
@@ -187,14 +162,7 @@ export function isApprovedDebugTester(username, email) {
     return false;
   }
 
-  return (
-    approvalEntriesMatch(APPROVED_DEBUG_TESTERS, normalizedUsername, normalizedEmail) ||
-    approvalEntriesMatch(FALLBACK_APPROVED_DEBUG_TESTERS, normalizedUsername, normalizedEmail) ||
-    FALLBACK_USERS.some(
-      (user) =>
-        user.username.toLowerCase() === normalizedUsername || user.email.toLowerCase() === normalizedEmail,
-    )
-  );
+  return approvalEntriesMatch(APPROVED_DEBUG_TESTERS, normalizedUsername, normalizedEmail);
 }
 
 export function getRegistrationPhase() {
@@ -210,24 +178,6 @@ export function listApprovedDebugTesters() {
       value,
       source: "env",
     });
-  }
-
-  for (const value of FALLBACK_APPROVED_DEBUG_TESTERS) {
-    if (!value) continue;
-    entries.set(value, {
-      value,
-      source: "built-in",
-    });
-  }
-
-  for (const user of FALLBACK_USERS) {
-    const username = user.username.trim().toLowerCase();
-    if (username) {
-      entries.set(username, {
-        value: username,
-        source: "built-in-account",
-      });
-    }
   }
 
   return [...entries.values()].sort((left, right) => left.value.localeCompare(right.value));
@@ -293,21 +243,19 @@ function logDbFallback(scope, error) {
   console.warn(`[transitalert-auth] ${scope} falling back: ${message}`);
 }
 
+// X-Forwarded-For's first entry is whatever the client sent (Cloudflare
+// appends rather than replaces), so rotating it bypassed every limit.
+// CF-Connecting-IP / Netlify's header are set by the edge and can't be
+// spoofed through it; otherwise use the socket address.
 function readClientIpAddress(req) {
-  const forwarded = req.headers?.["x-forwarded-for"];
-  if (typeof forwarded === "string" && forwarded.trim()) {
-    return forwarded.split(",")[0].trim();
+  const trusted = req.headers?.["cf-connecting-ip"] || req.headers?.["x-nf-client-connection-ip"];
+  if (typeof trusted === "string" && trusted.trim()) {
+    return trusted.trim();
   }
-  if (Array.isArray(forwarded) && forwarded[0]) {
-    return String(forwarded[0]).trim();
-  }
-  return (
-    req.headers?.["x-real-ip"] ||
-    req.socket?.remoteAddress ||
-    req.connection?.remoteAddress ||
-    "unknown"
-  );
+  return req.socket?.remoteAddress || req.connection?.remoteAddress || "unknown";
 }
+
+const MAX_RATE_LIMIT_BUCKETS = 20_000;
 
 export function consumeAuthRateLimit(req, scope, options = {}) {
   const limit = options.limit ?? 10;
@@ -319,6 +267,10 @@ export function consumeAuthRateLimit(req, scope, options = {}) {
   const existing = authRateLimitBuckets.get(key);
 
   if (!existing || existing.resetAt <= now) {
+    if (authRateLimitBuckets.size >= MAX_RATE_LIMIT_BUCKETS) {
+      // Map iteration order is insertion order: drop the oldest bucket.
+      authRateLimitBuckets.delete(authRateLimitBuckets.keys().next().value);
+    }
     authRateLimitBuckets.set(key, { count: 1, resetAt: now + windowMs });
     return { allowed: true, retryAfterSeconds: Math.ceil(windowMs / 1000) };
   }
@@ -393,11 +345,15 @@ function readSignedSession(rawCookie) {
   if (!rawCookie || typeof rawCookie !== "string") return null;
   const [encoded, signature] = rawCookie.split(".");
   if (!encoded || !signature) return null;
-  if (sign(encoded) !== signature) return null;
+  const expected = Buffer.from(sign(encoded));
+  const supplied = Buffer.from(signature);
+  if (expected.length !== supplied.length || !crypto.timingSafeEqual(expected, supplied)) return null;
 
   try {
     const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
     if (!payload?.id) return null;
+    // Bearer tokens carry no cookie Max-Age, so enforce the lifetime here.
+    if (!Number.isFinite(payload.iat) || Date.now() - payload.iat > SESSION_MAX_AGE_MS) return null;
     return payload;
   } catch {
     return null;
@@ -417,13 +373,21 @@ export function parseCookies(req) {
   return cookies;
 }
 
+const MAX_JSON_BODY_BYTES = 256 * 1024;
+
 export async function readJsonBody(req) {
   if (req.body && typeof req.body === "object") {
     return req.body;
   }
   const chunks = [];
+  let size = 0;
   for await (const chunk of req) {
-    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+    const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+    size += buffer.length;
+    if (size > MAX_JSON_BODY_BYTES) {
+      throw Object.assign(new Error("Request body too large."), { statusCode: 413 });
+    }
+    chunks.push(buffer);
   }
   const raw = Buffer.concat(chunks).toString("utf8").trim();
   return raw ? JSON.parse(raw) : {};
@@ -471,12 +435,25 @@ export function sanitizeUser(user) {
   };
 }
 
-export async function ensureAdminAccount() {
+// Runs on every session check and login, so do the work once per process
+// (retrying after a failure) instead of a lookup and upsert per request.
+let ensureAdminAccountPromise = null;
+
+export function ensureAdminAccount() {
+  if (!ensureAdminAccountPromise) {
+    ensureAdminAccountPromise = ensureAdminAccountOnce().then((ok) => {
+      if (!ok) ensureAdminAccountPromise = null;
+    });
+  }
+  return ensureAdminAccountPromise;
+}
+
+async function ensureAdminAccountOnce() {
   try {
     const context = await loadDbContext();
-    if (!context) return;
+    if (!context) return false;
     const { db, appUsersTable, userPreferencesTable } = context;
-    if (!db) return;
+    if (!db) return false;
     const existing = await db.query.appUsersTable.findFirst({
       where: (fields, operators) => operators.eq(fields.username, adminUsername),
     });
@@ -511,8 +488,9 @@ export async function ensureAdminAccount() {
             },
           });
       }
-      return;
+      return true;
     }
+    if (!existing) return true;
 
     if (
       existing.email !== adminEmail ||
@@ -551,8 +529,10 @@ export async function ensureAdminAccount() {
           },
         });
     }
+    return true;
   } catch (error) {
     logDbFallback("ensureAdminAccount", error);
+    return false;
   }
 }
 
@@ -610,7 +590,9 @@ export async function authenticateUser(username, password) {
       throw new Error("Database unavailable");
     }
     const user = await db.query.appUsersTable.findFirst({
-      where: (fields, operators) => operators.ilike(fields.username, username),
+      // lower() equality, not ilike: ilike treats "_" and "%" as wildcards, so
+      // a lookalike username such as "a_min" could shadow the real admin.
+      where: (fields) => sql`lower(${fields.username}) = lower(${String(username)})`,
     });
     if (!user) return null;
     return verifyPassword(password, user.passwordHash) ? sanitizeUser(user) : null;
@@ -698,13 +680,15 @@ export async function getUserByUsernameOrEmail(username, email) {
     if (!db) {
       throw new Error("Database unavailable");
     }
+    // Case-insensitive, matching how login looks names up, so "ADMIN" can't
+    // be registered alongside "admin".
     const existingByUsername = await db.query.appUsersTable.findFirst({
-      where: (fields, operators) => operators.eq(fields.username, username),
+      where: (fields) => sql`lower(${fields.username}) = lower(${String(username)})`,
     });
     if (existingByUsername) return existingByUsername;
 
     return db.query.appUsersTable.findFirst({
-      where: (fields, operators) => operators.eq(fields.email, email),
+      where: (fields) => sql`lower(${fields.email}) = lower(${String(email)})`,
     });
   } catch (error) {
     logDbFallback("getUserByUsernameOrEmail", error);
@@ -871,7 +855,28 @@ export async function getUserPreferences(userId) {
   }
 }
 
+const MAX_PREFERENCES_BYTES = 64 * 1024;
+
+// Drops fields of the wrong shape instead of storing them: a number where an
+// array belongs later crashed every merge for that account.
+function sanitizePreferencesPatch(patch) {
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) return {};
+  const isPlainObject = (value) => value && typeof value === "object" && !Array.isArray(value);
+  const clean = {};
+  for (const key of ["favouriteStops", "favouriteRoutes", "transportModes"]) {
+    if (Array.isArray(patch[key])) clean[key] = patch[key].slice(0, 500);
+  }
+  for (const key of ["selectedMapFilters", "appPreferences"]) {
+    if (isPlainObject(patch[key])) clean[key] = patch[key];
+  }
+  if (Buffer.byteLength(JSON.stringify(clean)) > MAX_PREFERENCES_BYTES) {
+    throw Object.assign(new Error("Preferences are too large."), { statusCode: 413 });
+  }
+  return clean;
+}
+
 export async function upsertUserPreferences(userId, patch) {
+  patch = sanitizePreferencesPatch(patch);
   // Push filters have their own atomic, authenticated save route. A stale
   // Home/favourites snapshot must not undo a notification opt-out.
   if (patch.appPreferences && typeof patch.appPreferences === "object") {

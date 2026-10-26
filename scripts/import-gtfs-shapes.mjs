@@ -42,7 +42,7 @@ function parseCsv(text) {
     rows.push(row);
   }
 
-  const headers = rows[0];
+  const headers = rows[0].map((value, index) => (index === 0 ? value.replace(/^﻿/, "") : value));
   return rows.slice(1).map((r) =>
     Object.fromEntries(headers.map((h, idx) => [h, r[idx] ?? ""]))
   );
@@ -126,7 +126,10 @@ const out = {};
 
 for (const routeName of targetRoutes) {
   const route = routes.find(
-    (r) => normaliseRouteName(r.route_name || "") === normaliseRouteName(routeName)
+    // GTFS has no route_name column; match the long or short name.
+    (r) =>
+      normaliseRouteName(r.route_long_name || "") === normaliseRouteName(routeName) ||
+      normaliseRouteName(r.route_short_name || "") === normaliseRouteName(routeName)
   );
 
   if (!route) {

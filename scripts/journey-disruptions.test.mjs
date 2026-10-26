@@ -40,3 +40,10 @@ test("healthboard shaped notice with tunnel only in structured lines gets closur
   assert.equal(alertMatchesJourney(healthboard, rail), true);
   assert.match(journeyDisruptionGuidance([healthboard], true), /Metro Tunnel closure/);
 });
+test("train alerts with bare numbers do not attach to tram or bus routes", () => {
+  const tram = [{ mode: "tram", title: "1", from: "A", to: "B" }];
+  assert.equal(alertMatchesJourney({ title: "Platform 1 closed at Flinders Street", summary: "", lines: [] }, tram), false);
+  assert.equal(alertMatchesJourney({ title: "5 minute delays", summary: "", lines: [] }, [{ mode: "tram", title: "5", from: "A", to: "B" }]), false);
+  assert.equal(alertMatchesJourney({ title: "Route 1 diversion", summary: "", lines: [], mode: "tram" }, tram), true);
+  assert.equal(alertMatchesJourney({ title: "Diversion", summary: "", lines: ["1"], mode: "tram" }, tram), true);
+});

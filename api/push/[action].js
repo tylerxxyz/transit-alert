@@ -1,9 +1,10 @@
-import { getSessionUser, readJsonBody, sendJson } from "../_lib/auth.js";
+import { consumeAuthRateLimit, getSessionUser, readJsonBody, sendJson } from "../_lib/auth.js";
+import { applyCorsHeaders, isCrossSiteWriteBlocked } from "../_lib/cors.js";
 import {
   checkAndPushNewAlerts,
   getVapidPublicKey,
   isPushConfigured,
-  removeSubscriptionByEndpoint,
+  removeSubscriptionWithSecret,
   saveSubscription,
   sendMockSafetyTestPushes,
   sendPushToAllSubscriptions,
@@ -15,22 +16,29 @@ import {
 
 export default async function handler(req, res) {
   const action = Array.isArray(req.query?.action) ? req.query.action[0] : req.query?.action;
-  const origin = req.headers?.origin || "https://tylerbnobleday-cmyk.github.io";
-
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Vary", "Origin");
+  applyCorsHeaders(req, res, "GET,POST,OPTIONS");
 
   if (req.method === "OPTIONS") {
     res.status(204).send("");
+    return;
+  }
+  if (isCrossSiteWriteBlocked(req)) {
+    sendJson(res, 403, { error: "Cross-site request blocked" });
     return;
   }
 
   if (action === "vapid-key") {
     sendJson(res, 200, { publicKey: getVapidPublicKey(), configured: isPushConfigured() });
     return;
+  }
+
+  if ((action === "subscribe" || action === "unsubscribe") && req.method === "POST") {
+    const limit = consumeAuthRateLimit(req, `push-${action}`, { limit: 20, windowMs: 10 * 60 * 1000 });
+    if (!limit.allowed) {
+      res.setHeader("Retry-After", String(limit.retryAfterSeconds));
+      sendJson(res, 429, { error: "Too many requests. Please try again shortly." });
+      return;
+    }
   }
 
   if (action === "subscribe" && req.method === "POST") {
@@ -47,8 +55,9 @@ export default async function handler(req, res) {
 
     const user = await getSessionUser(req).catch(() => null);
     const userId = user && user.id !== "guest-session" ? user.id : null;
-    const saved = await saveSubscription(body.subscription, userId);
-    sendJson(res, saved ? 200 : 500, { subscribed: saved });
+    // previous carries over the owner and filters of a rotated subscription.
+    const saved = await saveSubscription(body.subscription, userId, body.previous ?? null);
+    sendJson(res, saved ? 200 : 400, { subscribed: saved });
     return;
   }
 
@@ -58,8 +67,10 @@ export default async function handler(req, res) {
       sendJson(res, 400, { error: "An endpoint is required" });
       return;
     }
-    const removed = await removeSubscriptionByEndpoint(body.endpoint);
-    sendJson(res, 200, { unsubscribed: removed });
+    // Requires the subscription's auth secret, so knowing an endpoint alone
+    // is not enough to delete someone else's subscription.
+    const removed = await removeSubscriptionWithSecret(body.endpoint, body.auth);
+    sendJson(res, removed ? 200 : 403, { unsubscribed: removed });
     return;
   }
 

@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { eq, inArray, sql } from "drizzle-orm";
 import webpush from "web-push";
 import { dispatchFavouriteSetEvents } from "./favourite-set-notifications.js";
@@ -54,29 +55,97 @@ export function getVapidPublicKey() {
   return process.env.VAPID_PUBLIC_KEY || null;
 }
 
-export async function saveSubscription(subscription, userId) {
+// Only real browser push services. The stored endpoint is POSTed to on
+// every alert, so accepting any URL let anyone make this server send
+// requests to internal addresses (SSRF).
+const PUSH_SERVICE_HOST_PATTERNS = [
+  /^fcm\.googleapis\.com$/,
+  /^android\.googleapis\.com$/,
+  /^updates\.push\.services\.mozilla\.com$/,
+  /^push\.services\.mozilla\.com$/,
+  /(^|\.)push\.apple\.com$/,
+  /(^|\.)notify\.windows\.com$/,
+  /^push\.api\.chrome\.google\.com$/,
+];
+
+export function isAllowedPushEndpoint(endpoint) {
+  if (typeof endpoint !== "string" || endpoint.length > 2048) return false;
+  try {
+    const url = new URL(endpoint);
+    return url.protocol === "https:" && !url.port && PUSH_SERVICE_HOST_PATTERNS.some((pattern) => pattern.test(url.hostname));
+  } catch {
+    return false;
+  }
+}
+
+function isValidKey(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= 256 && /^[A-Za-z0-9_=-]+$/.test(value);
+}
+
+function sameSecret(left, right) {
+  const a = Buffer.from(String(left || ""));
+  const b = Buffer.from(String(right || ""));
+  return a.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// previous is the { endpoint, auth } of a subscription the browser rotated
+// away from (pushsubscriptionchange): its owner and notification filters
+// carry over to the new endpoint instead of being lost, provided the caller
+// proves it held that subscription by sending its auth secret.
+export async function saveSubscription(subscription, userId, previous = null) {
   const context = await loadPushDbContext();
-  if (!context || !subscription?.endpoint || !subscription?.keys?.p256dh || !subscription?.keys?.auth) {
+  if (
+    !context ||
+    !isAllowedPushEndpoint(subscription?.endpoint) ||
+    !isValidKey(subscription?.keys?.p256dh) ||
+    !isValidKey(subscription?.keys?.auth)
+  ) {
     return false;
   }
 
   const { db, pushSubscriptionsTable } = context;
+  const existing = await db.query.pushSubscriptionsTable.findFirst({
+    where: eq(pushSubscriptionsTable.endpoint, subscription.endpoint),
+  });
+  // Re-registering an endpoint someone else already holds needs its secret;
+  // otherwise anyone who learned an endpoint could take it over.
+  if (existing && !sameSecret(existing.authKey, subscription.keys.auth)) {
+    return false;
+  }
+
+  let inherited = null;
+  if (previous?.endpoint && previous.endpoint !== subscription.endpoint) {
+    const old = await db.query.pushSubscriptionsTable.findFirst({
+      where: eq(pushSubscriptionsTable.endpoint, String(previous.endpoint)),
+    });
+    if (old && sameSecret(old.authKey, previous.auth)) {
+      inherited = old;
+      await db.delete(pushSubscriptionsTable).where(eq(pushSubscriptionsTable.endpoint, old.endpoint));
+    }
+  }
+
+  const owner = userId ?? existing?.userId ?? inherited?.userId ?? null;
+  const filters = inherited
+    ? { notificationCategories: inherited.notificationCategories ?? null, notificationLines: inherited.notificationLines ?? null }
+    : {};
   await db
     .insert(pushSubscriptionsTable)
     .values({
       endpoint: subscription.endpoint,
       p256dh: subscription.keys.p256dh,
       authKey: subscription.keys.auth,
-      userId: userId ?? null,
+      userId: owner,
       lastSeenAt: new Date(),
+      ...filters,
     })
     .onConflictDoUpdate({
       target: pushSubscriptionsTable.endpoint,
       set: {
         p256dh: subscription.keys.p256dh,
         authKey: subscription.keys.auth,
-        userId: userId ?? null,
+        userId: owner,
         lastSeenAt: new Date(),
+        ...filters,
       },
     });
   return true;
@@ -87,6 +156,20 @@ export async function removeSubscriptionByEndpoint(endpoint) {
   if (!context || !endpoint) return false;
   const { db, pushSubscriptionsTable } = context;
   await db.delete(pushSubscriptionsTable).where(eq(pushSubscriptionsTable.endpoint, endpoint));
+  return true;
+}
+
+// Public unsubscribe path: the caller must prove it holds the subscription.
+export async function removeSubscriptionWithSecret(endpoint, auth) {
+  const context = await loadPushDbContext();
+  if (!context || !endpoint) return false;
+  const { db, pushSubscriptionsTable } = context;
+  const existing = await db.query.pushSubscriptionsTable.findFirst({
+    where: eq(pushSubscriptionsTable.endpoint, String(endpoint)),
+  });
+  if (!existing) return true;
+  if (!sameSecret(existing.authKey, auth)) return false;
+  await db.delete(pushSubscriptionsTable).where(eq(pushSubscriptionsTable.endpoint, existing.endpoint));
   return true;
 }
 
@@ -398,31 +481,45 @@ export function withAlertLineLabel(alert, body) {
   return `${lineLabel}: ${body}`;
 }
 
+const PUSH_DELIVERY_TIMEOUT_MS = 10_000;
+const PUSH_DELIVERY_CONCURRENCY = 20;
+
 async function deliverPushToSubscriptions(subscriptions, payload) {
   const body = JSON.stringify(payload);
   let succeeded = 0;
 
-  await Promise.all(
-    subscriptions.map(async (subscription) => {
-      try {
-        await webpush.sendNotification(
-          {
-            endpoint: subscription.endpoint,
-            keys: { p256dh: subscription.p256dh, auth: subscription.authKey },
-          },
-          body,
-        );
-        succeeded += 1;
-      } catch (error) {
-        const statusCode = error?.statusCode;
-        if (statusCode === 404 || statusCode === 410) {
-          await removeSubscriptionByEndpoint(subscription.endpoint).catch(() => undefined);
-        } else {
-          console.error("[transitalert-push] Failed to deliver push", subscription.endpoint, error?.message ?? error);
-        }
+  const deliverOne = async (subscription) => {
+    // Old rows may predate endpoint validation; never POST to anything that
+    // isn't a real push service.
+    if (!isAllowedPushEndpoint(subscription.endpoint)) {
+      await removeSubscriptionByEndpoint(subscription.endpoint).catch(() => undefined);
+      return;
+    }
+    try {
+      await webpush.sendNotification(
+        {
+          endpoint: subscription.endpoint,
+          keys: { p256dh: subscription.p256dh, auth: subscription.authKey },
+        },
+        body,
+        // Without a timeout, one endpoint that accepts the connection and
+        // never answers stalled the whole alert loop indefinitely.
+        { timeout: PUSH_DELIVERY_TIMEOUT_MS },
+      );
+      succeeded += 1;
+    } catch (error) {
+      const statusCode = error?.statusCode;
+      if (statusCode === 404 || statusCode === 410) {
+        await removeSubscriptionByEndpoint(subscription.endpoint).catch(() => undefined);
+      } else {
+        console.error("[transitalert-push] Failed to deliver push", subscription.endpoint, error?.message ?? error);
       }
-    }),
-  );
+    }
+  };
+
+  for (let index = 0; index < subscriptions.length; index += PUSH_DELIVERY_CONCURRENCY) {
+    await Promise.all(subscriptions.slice(index, index + PUSH_DELIVERY_CONCURRENCY).map(deliverOne));
+  }
 
   return { attempted: subscriptions.length, succeeded, vapidConfigured: true };
 }
@@ -648,7 +745,20 @@ export async function readUserPushPreferences(userId) {
   return { categories: row?.appPreferences?.pushNotificationCategories ?? null, lines: row?.appPreferences?.pushNotificationLines ?? null };
 }
 
-export async function checkAndPushNewAlerts() {
+// The 60s interval can fire again while a slow run is still delivering; two
+// overlapping runs would race on claims and double-send.
+let alertCheckInFlight = null;
+
+export function checkAndPushNewAlerts() {
+  if (!alertCheckInFlight) {
+    alertCheckInFlight = runAlertCheck().finally(() => {
+      alertCheckInFlight = null;
+    });
+  }
+  return alertCheckInFlight;
+}
+
+async function runAlertCheck() {
   if (!ensureVapidConfigured()) return;
 
   await checkTramFeedRecovery().catch((error) => {
@@ -674,8 +784,13 @@ export async function checkAndPushNewAlerts() {
   // that existed before the first real subscriber signed up was
   // permanently skipped and could never be delivered to them. Release the
   // claim so a later run (once someone has subscribed) can still send it.
-  const releaseIfUndelivered = async (result, ids) => {
-    if (result?.succeeded > 0) return;
+  //
+  // Only release when nobody is subscribed at all. Releasing whenever 0
+  // deliveries succeeded also caught alerts every subscriber had filtered
+  // out, which were then re-claimed and released every 60s forever.
+  const hasAnySubscribers = (await getSubscriptionsForCategory(undefined)).length > 0;
+  const releaseIfUndelivered = async (_result, ids) => {
+    if (hasAnySubscribers) return;
     for (const id of ids) await releaseAlertClaim(id);
   };
 

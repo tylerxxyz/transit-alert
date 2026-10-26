@@ -25,10 +25,23 @@ $databaseBridgeErrorLog = Join-Path $databaseBridgeDir 'bridge-error.log'
 $nodePath = 'C:\Users\tyler\AppData\Local\Programs\NodeJS\node-v24.21.0-win-x64\node.exe'
 $databaseBridgeHealthy = $false
 try {
-  $databaseBridgeProbe = Invoke-WebRequest -Uri 'http://127.0.0.1:18787/health' -UseBasicParsing -TimeoutSec 3 -SkipHttpErrorCheck
-  $databaseBridgeHealthy = ($databaseBridgeProbe.StatusCode -eq 401 -and $databaseBridgeProbe.Content -match '"error"\s*:\s*"unauthorized"')
-} catch {
+  # -SkipHttpErrorCheck doesn't exist in Windows PowerShell 5.1, which made
+  # this probe always fail. 5.1 throws on the expected 401 instead, so read
+  # the response off the exception.
+  $databaseBridgeProbe = Invoke-WebRequest -Uri 'http://127.0.0.1:18787/health' -UseBasicParsing -TimeoutSec 3
   $databaseBridgeHealthy = $false
+} catch {
+  $probeResponse = $_.Exception.Response
+  $databaseBridgeHealthy = $false
+  if ($probeResponse -and [int]$probeResponse.StatusCode -eq 401) {
+    try {
+      $reader = New-Object System.IO.StreamReader($probeResponse.GetResponseStream())
+      $databaseBridgeHealthy = ($reader.ReadToEnd() -match '"error"\s*:\s*"unauthorized"')
+      $reader.Dispose()
+    } catch {
+      $databaseBridgeHealthy = $false
+    }
+  }
 }
 
 if (-not $databaseBridgeHealthy) {
@@ -86,7 +99,12 @@ if (Test-Path -LiteralPath $pidPath) {
   }
 }
 if (-not $running) {
-  $running = Get-Process cloudflared -ErrorAction SilentlyContinue | Select-Object -First 1
+  # Skip quick tunnels (cloudflared --url ...): adopting one of those as the
+  # named tunnel meant the health checks watched the wrong process.
+  $running = Get-CimInstance Win32_Process -Filter "Name = 'cloudflared.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -notmatch '--url\b' } |
+    ForEach-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue } |
+    Select-Object -First 1
 }
 
 if ($running) {
@@ -144,7 +162,9 @@ if ($running) {
   $state.consecutiveFailures += 1
   $state | ConvertTo-Json | Set-Content -LiteralPath $healthStatePath -Encoding UTF8
 
-  if ($state.consecutiveFailures -lt 1) {
+  # Was "-lt 1", which is never true after the increment above: a single
+  # failed 10s check force-restarted the tunnel and every hostname on it.
+  if ($state.consecutiveFailures -lt 3) {
     exit 0
   }
 

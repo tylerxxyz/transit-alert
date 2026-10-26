@@ -249,13 +249,15 @@ export async function unsubscribeFromPush(): Promise<boolean> {
   if (!subscription) return true;
 
   const endpoint = subscription.endpoint;
+  // The server only removes a subscription when shown its auth secret.
+  const auth = subscription.toJSON().keys?.auth;
   await subscription.unsubscribe().catch(() => undefined);
 
   const response = await fetch(getApiUrl("/api/push/unsubscribe"), {
     method: "POST",
     headers: buildSessionHeaders({ "Content-Type": "application/json" }),
     credentials: "include",
-    body: JSON.stringify({ endpoint }),
+    body: JSON.stringify({ endpoint, auth }),
   });
 
   return response.ok;

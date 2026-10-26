@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { formatDistanceToNow } from "date-fns";
 import { ArrowLeft, BellRing, ExternalLink, MessageSquareWarning, TrainFront, X } from "lucide-react";
 import { useGetReports } from "@/lib/api-client-react/src/generated/api";
 import { fetchMetroNotifyAlerts, getTodaysCommunityAlerts, isAlertCurrent, isAlertWindowActiveNow, isHeadlineAlert, isProminentAlert, type MetroNotifyAlert } from "@/lib/todays-alerts";
+import { formatRelativeTime } from "@/lib/relative-time";
 
 type FeaturedAlert =
   | Awaited<ReturnType<typeof fetchMetroNotifyAlerts>>[number]
@@ -756,7 +756,7 @@ function getAlertAgeTimestamp(alert: MetroNotifyAlert): string | number | undefi
 function getAlertAgeLabel(alert: MetroNotifyAlert): string {
   if (isAlertWindowActiveNow(alert)) return "Active now";
   const timestamp = getAlertAgeTimestamp(alert);
-  return timestamp ? formatDistanceToNow(new Date(timestamp), { addSuffix: true }) : "Just updated";
+  return timestamp ? formatRelativeTime(timestamp) : "Just updated";
 }
 
 function bundleSimilarAlerts(alerts: MetroNotifyAlert[]): AlertBundle[] {
@@ -1514,7 +1514,7 @@ export default function TodaysAlerts() {
                         </p>
                       </div>
                       <span className="text-xs text-white/45">
-                        {formatDistanceToNow(new Date(report.createdAt), { addSuffix: true })}
+                        {formatRelativeTime(report.createdAt)}
                       </span>
                     </div>
 

@@ -25,23 +25,24 @@ self.addEventListener("push", (event) => {
 self.addEventListener("pushsubscriptionchange", (event) => {
   event.waitUntil(
     (async () => {
-      const oldEndpoint = event.oldSubscription?.endpoint;
+      const oldSubscription = event.oldSubscription?.toJSON?.() ?? null;
       const newSubscription =
         event.newSubscription ||
         (await self.registration.pushManager.subscribe(event.oldSubscription?.options ?? { userVisibleOnly: true }));
 
-      if (oldEndpoint) {
-        await fetch("/api/push/unsubscribe", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ endpoint: oldEndpoint }),
-        }).catch(() => undefined);
-      }
-
+      // One call that hands the old subscription's owner and notification
+      // filters to the new one. A separate unsubscribe + subscribe (with no
+      // session available here) lost both, so opted-out users got everything.
       await fetch("/api/push/subscribe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subscription: newSubscription.toJSON() }),
+        credentials: "include",
+        body: JSON.stringify({
+          subscription: newSubscription.toJSON(),
+          previous: oldSubscription?.endpoint
+            ? { endpoint: oldSubscription.endpoint, auth: oldSubscription.keys?.auth }
+            : null,
+        }),
       }).catch(() => undefined);
     })(),
   );

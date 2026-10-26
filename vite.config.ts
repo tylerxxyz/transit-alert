@@ -5,7 +5,14 @@ import path from "path";
 import crypto from "node:crypto";
 import { copyFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { feedBearing } from "./api/_lib/vehicle-bearing.js";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
+
+// The frontend adds query strings (e.g. ?minLat=... for live trams), so
+// exact req.url matches fell through to the SPA page and returned HTML.
+function requestPath(req: { url?: string }) {
+  return (req.url || "").split("?")[0];
+}
 
 const require = createRequire(import.meta.url);
 const GtfsRealtimeBindings = require("./vendor/ptv/gtfs-realtime.cjs");
@@ -1019,7 +1026,7 @@ function buildPtvLiveTrains(feed: Awaited<ReturnType<typeof fetchFeed>>, source:
         status: "on_time",
         timestamp: timestamp ? new Date(timestamp * 1000).toISOString() : undefined,
         direction: directionId === 0 ? "up" : "down",
-        heading: typeof position.bearing === "number" ? position.bearing : undefined,
+        heading: feedBearing(position),
         trainType: source.trainType,
         consist: vehicle.vehicle?.id || label,
         serviceDescription: destination,
@@ -1111,7 +1118,7 @@ function buildNswLiveTrains(feed: Awaited<ReturnType<typeof fetchFeed>>) {
         status: "on_time",
         timestamp: timestamp ? new Date(timestamp * 1000).toISOString() : undefined,
         direction: directionId === 0 ? "up" : directionId === 1 ? "down" : destination === "Southern Cross" ? "city-bound" : "outbound",
-        heading: typeof position.bearing === "number" ? position.bearing : undefined,
+        heading: feedBearing(position),
         trainType: serviceLabel.includes("Xplorer") ? "NSW TrainLink Xplorer" : "NSW TrainLink XPT",
         consist: vehicle.vehicle?.id || vehicle.vehicle?.label || tdn,
         serviceDescription: [serviceLabel, destination].filter(Boolean).join(" · "),
@@ -1227,7 +1234,7 @@ function buildPtvLiveSurfaceVehicles(
         stopSequence: toNumber(vehicle.currentStopSequence),
         status: "live",
         timestamp: timestamp ? new Date(timestamp * 1000).toISOString() : undefined,
-        heading: typeof position.bearing === "number" ? position.bearing : undefined,
+        heading: feedBearing(position),
         operator: options.operator,
       };
     })
@@ -1287,7 +1294,7 @@ function ptvRealtimePlugin(runtimeConfig: RuntimeConfig): Plugin {
   const registerMiddleware = (middlewares: any) => {
     middlewares.use(async (req, res, next) => {
       try {
-        if (req.url === "/api/auth/session") {
+        if (requestPath(req) === "/api/auth/session") {
           const user = getSessionUser(req);
           sendJson(res, 200, {
             authenticated: Boolean(user),
@@ -1297,12 +1304,12 @@ function ptvRealtimePlugin(runtimeConfig: RuntimeConfig): Plugin {
           return;
         }
 
-        if (req.url === "/api/auth/roles") {
+        if (requestPath(req) === "/api/auth/roles") {
           sendJson(res, 200, { roles: ROLE_OPTIONS });
           return;
         }
 
-        if (req.url === "/api/auth/login" && req.method === "POST") {
+        if (requestPath(req) === "/api/auth/login" && req.method === "POST") {
           const body = (await readJsonBody(req)) as { username?: string; password?: string };
           const username = body.username?.trim().toLowerCase();
           const password = body.password ?? "";
@@ -1335,7 +1342,7 @@ function ptvRealtimePlugin(runtimeConfig: RuntimeConfig): Plugin {
           return;
         }
 
-        if (req.url === "/api/auth/register" && req.method === "POST") {
+        if (requestPath(req) === "/api/auth/register" && req.method === "POST") {
           const body = (await readJsonBody(req)) as {
             username?: string;
             email?: string;
@@ -1405,7 +1412,7 @@ function ptvRealtimePlugin(runtimeConfig: RuntimeConfig): Plugin {
           return;
         }
 
-        if (req.url === "/api/auth/guest" && req.method === "POST") {
+        if (requestPath(req) === "/api/auth/guest" && req.method === "POST") {
           const sessionId = crypto.randomUUID();
           sessionStore.set(sessionId, {
             id: "guest",
@@ -1429,7 +1436,7 @@ function ptvRealtimePlugin(runtimeConfig: RuntimeConfig): Plugin {
           return;
         }
 
-        if (req.url === "/api/auth/logout" && req.method === "POST") {
+        if (requestPath(req) === "/api/auth/logout" && req.method === "POST") {
           const sessionId = parseCookies(req).get("transitalert_session");
           if (sessionId) {
             sessionStore.delete(sessionId);
@@ -1439,7 +1446,7 @@ function ptvRealtimePlugin(runtimeConfig: RuntimeConfig): Plugin {
           return;
         }
 
-        if (req.url === "/api/preferences") {
+        if (requestPath(req) === "/api/preferences") {
           const user = getSessionUser(req);
           if (!user || user.role === "Guest") {
             sendJson(res, 401, { error: "Sign in to access account preferences" });
@@ -1461,7 +1468,7 @@ function ptvRealtimePlugin(runtimeConfig: RuntimeConfig): Plugin {
           return;
         }
 
-        if (req.url === "/api/preferences/merge" && req.method === "POST") {
+        if (requestPath(req) === "/api/preferences/merge" && req.method === "POST") {
           const user = getSessionUser(req);
           if (!user || user.role === "Guest") {
             sendJson(res, 401, { error: "Sign in to merge account preferences" });
@@ -1488,12 +1495,12 @@ function ptvRealtimePlugin(runtimeConfig: RuntimeConfig): Plugin {
           return;
         }
 
-        if (req.url === "/api/reports" && req.method === "GET") {
+        if (requestPath(req) === "/api/reports" && req.method === "GET") {
           sendJson(res, 200, [...reportStore].sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt)));
           return;
         }
 
-        if (req.url === "/api/reports" && req.method === "POST") {
+        if (requestPath(req) === "/api/reports" && req.method === "POST") {
           const body = (await readJsonBody(req)) as Partial<ReportRecord>;
           const report: ReportRecord = {
             id: nextReportId,
@@ -1525,18 +1532,18 @@ function ptvRealtimePlugin(runtimeConfig: RuntimeConfig): Plugin {
           return;
         }
 
-        if (req.url === "/api/reports/stats" && req.method === "GET") {
+        if (requestPath(req) === "/api/reports/stats" && req.method === "GET") {
           sendJson(res, 200, buildReportStats(reportStore));
           return;
         }
 
-        if (req.url === "/api/telegram/status") {
+        if (requestPath(req) === "/api/telegram/status") {
           const profile = await fetchTelegramBotProfile(telegramBotToken);
           sendJson(res, 200, profile);
           return;
         }
 
-        if (req.url === "/api/ptv/live-trains") {
+        if (requestPath(req) === "/api/ptv/live-trains") {
           const trackedTrains = await buildTransportVicLiveTrains(trackedConsists);
           let ptvTrains: Array<Record<string, unknown>> = [];
           let nswTrains: Array<Record<string, unknown>> = [];
@@ -1574,7 +1581,7 @@ function ptvRealtimePlugin(runtimeConfig: RuntimeConfig): Plugin {
           return;
         }
 
-        if (req.url === "/api/ptv/live-buses") {
+        if (requestPath(req) === "/api/ptv/live-buses") {
           if (!ptvSubscriptionKey) {
             sendJson(res, 200, { buses: [] });
             return;
@@ -1589,7 +1596,7 @@ function ptvRealtimePlugin(runtimeConfig: RuntimeConfig): Plugin {
           return;
         }
 
-        if (req.url === "/api/ptv/live-trams") {
+        if (requestPath(req) === "/api/ptv/live-trams") {
           if (!ptvSubscriptionKey) {
             sendJson(res, 200, { trams: [] });
             return;
@@ -1662,7 +1669,7 @@ function ptvRealtimePlugin(runtimeConfig: RuntimeConfig): Plugin {
           return;
         }
 
-        if (req.url === "/api/metro-notify/alerts") {
+        if (requestPath(req) === "/api/metro-notify/alerts") {
           const alerts = await fetchMetroHealthboardAlerts();
           sendJson(res, 200, { alerts });
           return;

@@ -10,6 +10,9 @@ function uniq(values) {
   return [...new Set(values.filter(Boolean))];
 }
 
+const asArray = (value) => (Array.isArray(value) ? value : []);
+const asObject = (value) => (value && typeof value === "object" && !Array.isArray(value) ? value : {});
+
 export default async function handler(req, res) {
   const user = await getSessionUser(req);
   if (!user || user.role === "Guest") {
@@ -63,18 +66,18 @@ export default async function handler(req, res) {
     const body = await readJsonBody(req);
     const existing = await getUserPreferences(user.id);
     const merged = await upsertUserPreferences(user.id, {
-      favouriteStops: uniq([...(existing.favouriteStops ?? []), ...((body.favouriteStops ?? []) || [])]),
-      favouriteRoutes: uniq([...(existing.favouriteRoutes ?? []), ...((body.favouriteRoutes ?? []) || [])]),
-      transportModes: uniq([...(existing.transportModes ?? []), ...((body.transportModes ?? []) || [])]),
+      favouriteStops: uniq([...(existing.favouriteStops ?? []), ...asArray(body?.favouriteStops)]),
+      favouriteRoutes: uniq([...(existing.favouriteRoutes ?? []), ...asArray(body?.favouriteRoutes)]),
+      transportModes: uniq([...(existing.transportModes ?? []), ...asArray(body?.transportModes)]),
       selectedMapFilters: {
         ...(existing.selectedMapFilters ?? {}),
-        ...((body.selectedMapFilters ?? {}) || {}),
+        ...asObject(body?.selectedMapFilters),
       },
       // Same admin-only-grant protection as the plain save handler above:
       // never let a non-admin's client-submitted merge move premiumAccess.
       appPreferences: {
         ...(existing.appPreferences ?? {}),
-        ...((body.appPreferences ?? {}) || {}),
+        ...asObject(body?.appPreferences),
         ...(user.isAdmin ? {} : { premiumAccess: existing?.appPreferences?.premiumAccess === true }),
       },
     });

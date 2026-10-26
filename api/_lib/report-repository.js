@@ -18,7 +18,7 @@ export function createReportRepository(queryOverride) {
     await ready;
   }
   return {
-    async list() { await ensureReady(); return (await query(`SELECT ${projection} FROM reports ORDER BY created_at DESC, id DESC`)).rows; },
+    async list() { await ensureReady(); return (await query(`SELECT ${projection} FROM reports WHERE created_at > now() - interval '30 days' ORDER BY created_at DESC, id DESC LIMIT 2000`)).rows; },
     async insert(r) {
       await ensureReady();
       return (await query(`INSERT INTO reports (report_type,transport_type,line_number,direction,location_name,notes,username,lat,lng) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING ${projection}`,[r.reportType,r.transportType,r.lineNumber,r.direction,r.locationName,r.notes,r.username,r.lat,r.lng])).rows[0];

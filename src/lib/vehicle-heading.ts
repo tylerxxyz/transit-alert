@@ -23,7 +23,14 @@ const stationKey =(name: string) => name.toLowerCase().replace(/\bstation\b/g, "
 /** Infer a local track bearing only when the destination identifies its direction.
  * Up/down are railway operating directions, not compass directions. */
 export function inferVehicleHeading(position: Coordinate, stops: readonly RouteStop[], destination: string): number | undefined {
-  const destinationIndex = stops.findIndex((stop) => stationKey(stop.name) === stationKey(destination));
+  // Feed destinations can read "Flinders Street → Frankston" or "Flinders
+  // Street via City Loop"; only the final station names the direction. On
+  // loop patterns the destination can also appear earlier in the list, and
+  // the last occurrence is where the train is actually heading.
+  const finalDestination = stationKey(
+    (destination.split("→").at(-1) ?? destination).replace(/\s+via\b.*$/i, "").replace(/\(.*?\)/g, ""),
+  );
+  const destinationIndex = stops.findLastIndex((stop) => stationKey(stop.name) === finalDestination);
   if (destinationIndex < 0 || stops.length < 2) return undefined;
   const scale = Math.cos(position[0] * Math.PI / 180);
   let nearest: { index: number; progress: number; distance: number } | undefined;

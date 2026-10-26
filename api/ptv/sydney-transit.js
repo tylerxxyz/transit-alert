@@ -1,5 +1,6 @@
 import GtfsRealtimeBindings from "gtfs-realtime-bindings";
 import AdmZip from "adm-zip";
+import { feedBearing } from "../_lib/vehicle-bearing.js";
 
 // Opt-in Sydney layer (see LayerState.sydneyTransit in Map.tsx) — this is a
 // separate NSW Transport Open Data product from the "nswtrains" feed used for
@@ -157,7 +158,7 @@ function buildSydneyBuses(feed, agencyLookup) {
         route,
         status: "live",
         timestamp: timestamp ? new Date(timestamp * 1000).toISOString() : undefined,
-        heading: typeof position.bearing === "number" ? position.bearing : undefined,
+        heading: feedBearing(position),
         operator,
       };
     })
@@ -188,7 +189,7 @@ function buildSydneyLightRail(feed, operator) {
         route,
         status: "live",
         timestamp: timestamp ? new Date(timestamp * 1000).toISOString() : undefined,
-        heading: typeof position.bearing === "number" ? position.bearing : undefined,
+        heading: feedBearing(position),
         operator,
       };
     })
@@ -224,7 +225,7 @@ function buildSydneyMetroTrains(feed) {
         status: "on_time",
         timestamp: timestamp ? new Date(timestamp * 1000).toISOString() : undefined,
         direction: directionId === 0 ? "up" : directionId === 1 ? "down" : "outbound",
-        heading: typeof position.bearing === "number" ? position.bearing : undefined,
+        heading: feedBearing(position),
         trainType: "Sydney Metro",
         consist: label || "Sydney Metro",
         serviceDescription: "Sydney Metro",
