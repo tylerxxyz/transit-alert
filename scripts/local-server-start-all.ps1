@@ -76,6 +76,18 @@ try {
   Write-HealthLog "Local host start failed: $($_.Exception.Message)"
 }
 
+# beta.transit-alert.com (port 3201) had no watchdog: after a reboot or a
+# crash it stayed down (Cloudflare 502) until someone restarted it by hand.
+# start-beta.ps1 returns immediately when the beta is already healthy.
+$betaStart = 'C:\Users\tyler\Documents\Codex\2026-10-20\i-w\work\transit-alert-selfhost\start-beta.ps1'
+if (Test-Path -LiteralPath $betaStart) {
+  try {
+    & $betaStart | Out-Null
+  } catch {
+    Write-HealthLog "Beta host start failed: $($_.Exception.Message)"
+  }
+}
+
 if (!(Test-Path -LiteralPath $cloudflaredPath)) {
   throw "Cloudflare connector is missing: $cloudflaredPath"
 }
