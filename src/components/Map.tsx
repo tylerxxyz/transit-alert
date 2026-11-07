@@ -10522,6 +10522,16 @@ type TramPatternStop = {
   status?: "passed" | "upcoming" | "skipped";
 };
 
+// Reduces a train destination such as "Flinders Street via City Loop" or
+// "Flinders Street via City Loop → Werribee" to the terminus the train is
+// currently heading for ("Flinders Street"), for station-name lookups.
+function stripTrainDestinationVia(destination: string) {
+  return (destination.split("→")[0] ?? "")
+    .replace(/\s+via\s+.+$/i, "")
+    .replace(/\s+Station$/i, "")
+    .trim();
+}
+
 function getMetroStoppingPatternStations(vehicle: LiveTrain, fullRoute = false): Station[] {
   const searchable = `${vehicle.line} ${vehicle.destination}`.toLowerCase();
   const lineKey = (
@@ -10541,8 +10551,12 @@ function getMetroStoppingPatternStations(vehicle: LiveTrain, fullRoute = false):
     new globalThis.Map(LINES[lineKey].map((station) => [station.name, station])).values(),
   );
   if (fullRoute) return stations;
+  // The server can append a verified "via City Loop" to the destination
+  // (see getVerifiedTrainMarkerDestination), so compare on the bare
+  // terminus name or a city-bound train would lose its direction.
+  const destinationStationName = stripTrainDestinationVia(vehicle.destination).toLowerCase();
   const destinationIndex = stations.findIndex(
-    (station) => station.name.toLowerCase() === vehicle.destination.trim().toLowerCase(),
+    (station) => station.name.toLowerCase() === destinationStationName,
   );
 
   if (destinationIndex === 0) {
@@ -15246,7 +15260,7 @@ export function Map({
       if (destinationName.toLowerCase() !== currentName.toLowerCase()) {
         fallbackStops.push({
           name: destinationName,
-          position: findStationCoordinate(destinationName) ?? [selectedVehicle.lat, selectedVehicle.lng],
+          position: findStationCoordinate(stripTrainDestinationVia(destinationName)) ?? [selectedVehicle.lat, selectedVehicle.lng],
         });
       }
       return fallbackStops;
