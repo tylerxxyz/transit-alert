@@ -1,136 +1,159 @@
-# TransitAlert
+# Transit Alert 🚆
 
-TransitAlert is a free, independent public transit tracking web app for Melbourne, Australia. It
-gives commuters live tracking of buses, trams and trains using real-time GTFS transit data, along
-with bus bay locations and stop information — all in one lightweight, easy-to-use site. It runs
-entirely in the browser at [transit-alert.com](https://transit-alert.com), no app install required.
+**Transit Alert** is an independent Melbourne public transport app focused on accurate live transport information for people who actually use the network — including gunzels, commuters and testers.
 
-TransitAlert is developed and maintained by Tyler Noble-day as an independent project. It is not
-affiliated with, endorsed by, or operated by Public Transport Victoria (PTV) or any other
-government transit authority.
+It is currently being developed as a **native-publishable app with a web version**, with iOS and Android support through the current app build.
 
-## What it does
+> Transit Alert is unofficial and is not affiliated with, endorsed by, or operated by Transport Victoria, PTV, Metro Trains Melbourne, V/Line, Yarra Trams, bus operators, or any other transport authority.
 
-- **Live vehicle tracking** — see where buses, trams and trains actually are on their routes, not
-  just scheduled times.
-- **GTFS-powered data** — built on the same open transit data standard used by transport
-  authorities worldwide, kept up to date automatically.
-- **Bus bay markers** — know exactly which bay or platform to head to, especially useful at larger
-  interchanges.
-- Also covers V/Line regional trains, NSW TrainLink/Sydney Trains, and selected freight overlays,
-  plus guest browsing and tester/admin tools for validating live transport features.
+## What Transit Alert does
 
-## Current release
+- 🚆 **Live train tracking** — Metro and V/Line services with live vehicle/service information where the source feed provides it.
+- 🚋 **Live tram tracking** — real-time tram positions and service information.
+- 🚌 **Live bus tracking** — live buses with route, operator, vehicle and registration information where published.
+- 🗺️ **Live map** — transport vehicles, routes, stations and stops in one map.
+- 🚉 **Station & stop information** — verified departures, platforms, wayfinding and interchange information.
+- 🧭 **Journey planning** — multi-modal journeys using trains, trams, buses and walking.
+- 🔔 **Disruptions & notifications** — service alerts with configurable notification categories and line/corridor filters.
+- 🚆 **Fleet tools** — search and track physical train sets/cars and view fleet information. Some fleet tools are Premium.
+- 📋 **Departure boards** — live departure information for supported stations and stops.
+- 🎫 **Fare support** — fare profiles and journey fare information.
+- 📍 **Station Passport** — station check-ins, stamps, achievements and challenges.
+- 🏛️ **Heritage trains** — heritage services and events.
+- 🚂 **Freight** — separate freight service information where reliable data is available.
+- 📝 **Community reports** — users can submit transport reports, with moderation and verification tools.
+- 🛠️ **Tester/admin tools** — reports, data-quality checks, fleet data, traveller management, announcements and notification tooling.
+- 👤 **Profiles & saved places** — traveller profiles, saved stops and personal preferences.
 
-- Web version: `1.0`
-- Webpage: [transit-alert.com](https://transit-alert.com)
-- Public guest frontend: [GitHub Pages](https://tylerbnobleday-cmyk.github.io/transit-alert/)
-- Local/live backend host target: local Node server with optional tunnel or Render-style deployment
-- Frontend: Vite + React + TypeScript
-- Backend/API style: local Node server with API handlers under [`api/`](api/)
+## Data accuracy
 
-## Version 1.0
+Transit Alert follows a **no-fake-data rule**.
 
-The first stable public release, built on top of the 0.9x guest-preview line.
+Live departures, vehicle positions, platforms, fleet numbers, registrations and service details are only displayed when they can be supported by connected transport data or verified app data. If a value cannot be verified, the app should show it as unavailable rather than inventing an answer.
 
-- Real per-stop platform data for Metro trains resolved via a static-schedule + live-feed
-  route/start-time match, covering trip IDs the live feed doesn't otherwise match.
-- Fixed a live-feed race that could send the same push notification twice.
-- Added a real GTFS-sourced planned-works feed from Metro's own public works index, filling in
-  car park closures, access changes, and night works the disruption feed alone was missing.
-- Corrected V/Line direction/destination reporting (the live feed's own direction field disagreed
-  with the static schedule for some regional trips).
-- Fixed Fleet Tracker misclassifying VLocity and inbound Stony Point Sprinter services.
-- Split NSW/Sydney bus operators into their real contracted-operator categories instead of one
-  generic bucket.
-- Tram tracking now falls back to a secondary PTV data source when the primary feed is down, and
-  surfaces real outages (and recovery) as an in-app alert and push notification instead of
-  silently going quiet.
-- Alert and push-notification text quality: enriched generic titles with the real cause, fixed a
-  duplicate-alert-category bug, corrected stale "X hours ago" timestamps on cancellations, and
-  fixed several corridor/station-naming inaccuracies.
+The app uses transport data sources including **PTV / Transport Victoria GTFS and GTFS-Realtime feeds**, plus NSW transport realtime data for supported NSW services.
 
-## Guest version 0.95
+## Current status
 
-Version `0.95` was the last public guest release before 1.0.
+**Current app line: 1.89 beta**
 
-- Guest users can browse the map and planner without making an account
-- Signed-in tester/admin accounts now persist in the real embedded database configured through `DATABASE_URL`
-- Tester registration is still gated through `APPROVED_DEBUG_TESTERS`
-- NSW TrainLink/XPT regional labelling was cleaned up to reduce generic fleet confusion
-- Mobile account screens were tightened up so they feel less cramped on narrow phones
+Transit Alert is actively being developed and tested. Features can change quickly during the beta as live-data accuracy, performance, notifications and mobile behaviour are improved.
 
-## Guest version 0.92
+The project is intended to become a polished native app while retaining the web version for easy access and testing.
 
-### 0.92 bug fixes
+## Main navigation
 
-- Connected station cards to the official dated Transport Victoria GTFS schedule with GTFS-Realtime overlays for expected times, delays, cancellations, and skipped stops.
-- Live bus markers now open the exact official trip update and show its published upcoming stops, stop IDs, and expected times.
-- Added a GitHub Pages SPA fallback so direct and shared app routes no longer return a GitHub 404.
-- Kept the no-fake-data rule: unpublished departures, stops, and vehicle details remain unavailable rather than being generated.
-- Reported by Jack Miller: the missing verified station replacement after fake boards were removed, and live bus markers not opening their stop sequence.
+The current app is organised around:
 
-### 0.91 bug fixes
+- **Live map**
+- **Plan a trip**
+- **Disruptions**
+- **Departure boards**
+- **Station Passport**
+- **Heritage trains**
+- **Freight**
+- **Fleet / Premium tools**
 
-- Restored Glen Huntly, Ormond, McKinnon, and other in-range station markers that mobile map thinning hid too aggressively.
-- Added live bus route, PTV run, vehicle/fleet ID, registration, and current stop fields whenever those values are published by the PTV feed.
-- Corrected regional corridor inference so a Maryborough-area train cannot be presented as a Geelong service simply because PTV supplied a generic V/Line label.
-- Improved Ballarat, Ararat, Maryborough, and Bendigo regional line alignment and added the missing Bendigo map corridor.
-- Removed generated station boards, surface-stop countdowns, regional timelines, freight movements, and PID previews. Missing feeds now show an honest unavailable state.
-- Live markers no longer fall back to guessed station coordinates, and nearest mapped bus stops are explicitly labelled as proximity estimates.
-- Temporary passwords can now be marked for mandatory replacement at next login; normal account tools remain locked until the user chooses a new password.
-- Reported by Jack Miller: missing mobile station labels, inaccurate V/Line alignment/service classification, and the incorrect Town Hall departure shown at Armadale.
+The exact navigation and feature availability can change between beta releases.
 
-### Live-data policy
+## Notifications
 
-TransitAlert never presents generated or placeholder departures, times, delays, platforms, service IDs, vehicle positions, registrations, or fleet numbers as real. A user-facing live value must come from a connected transport feed; unavailable fields remain unavailable.
+Transit Alert supports web/native push notification infrastructure for service alerts and selected transport events.
 
-## Main features
+Notification delivery is designed to work across:
 
-- Guest map + planner access for public browsing
-- Live Metro, tram, bus, and V/Line map layers
-- Premium-gated train lookup tools
-- Journey planner with saved active journey state
-- Admin panel for:
-  - account management
-  - runtime config
-  - marker overrides
-  - approved debug tester visibility
-- Freight overlay and selected interstate/XPT support
-- Embedded local database hosting via `pglite://...` for self-hosted account persistence
+- the app while open
+- background operation
+- supported fully-closed native app states
 
-## Copyright
+The notification system includes permission handling, subscriptions/tokens, filtering, duplicate suppression and alert formatting.
 
-Copyright 2026 Tyler Rose. TransitAlert, its app presentation, and original project assets are Tyler Rose work.
+## Reports & data quality
 
-TransitAlert remains an independent project and is not operated by, affiliated with, or endorsed by the Department of Transport and Planning, Transport Victoria, PTV, or Metro Trains Melbourne.
+The app has a reporting workflow rather than blindly accepting every user-submitted value.
 
-## Account model
+Reports can be reviewed by authorised testers/admins and may be accepted, rejected or used to improve verified transport data. Data-quality tooling is also used to identify fleet/operator/register mismatches and other issues.
 
-Right now the app is still in a tester/admin phase rather than open public registration.
+## Technology
 
-- Public registration is not fully open yet
-- Approved debug testers can register while tester mode is active
-- Admins can manage roles, premium access, and tester visibility from the app
-- A real `DATABASE_URL` is required for proper account persistence
-- The local self-host path can use `pglite://.local-db/transit-alert`
+The current application is built as a full-stack React application with:
 
-## Important environment variables
+- **React + TypeScript**
+- **Floot native/web runtime**
+- **Server endpoints**
+- **PostgreSQL-backed persistence**
+- **GTFS / GTFS-Realtime**
+- **Leaflet / React Leaflet**
+- **Push notification infrastructure**
+- **Capacitor-based native publishing**
 
-- `DATABASE_URL`
-- `AUTH_SESSION_SECRET`
-- `ADMIN_USERNAME`
-- `ADMIN_PASSWORD`
-- `ADMIN_EMAIL` (optional, but supported)
-- `APPROVED_DEBUG_TESTERS`
-- `PTV_SUBSCRIPTION_KEY`
-- `NSW_TRANSPORT_API_KEY` (optional for NSW/XPT live support)
+The repository also contains the web/PWA configuration and the project's server-side endpoint and helper code.
 
-Set `NSW_TRANSPORT_API_KEY` on the live host for NSW TrainLink/XPT realtime support. Do not commit the token into the repo.
+## Repository structure
 
-## Local development
+```
+components/     Reusable UI components
+endpoints/      Server/API endpoints
+helpers/        Data, fleet, notification and business logic
+pages/          Application pages/routes
+static/         App metadata, native configuration and static assets
+```
+
+## Development
 
 Install dependencies:
 
 ```bash
 pnpm install
+```
+
+Run the development build:
+
+```bash
+pnpm run dev
+```
+
+Run the production build:
+
+```bash
+pnpm run build
+pnpm run start
+```
+
+Type-check the project:
+
+```bash
+pnpm run typecheck
+```
+
+## Security
+
+Do **not** commit:
+
+- transport API subscription keys
+- database credentials
+- authentication/session secrets
+- push notification private keys
+- production passwords
+- other private deployment credentials
+
+Use the deployment environment for secrets.
+
+## Open source status
+
+The repository contains the project's current source and development history, but Transit Alert is **not currently presented as a fully open-source project with every production dependency and credential configuration exposed**.
+
+If the project is ever abandoned, the intention is to keep the source available rather than let the project disappear.
+
+## Links
+
+- **Live app:** https://transit-alert.com
+- **Public web/test build:** https://tylerbnobleday-cmyk.github.io/transit-alert/
+
+## Copyright
+
+© 2026 Tyler Noble-day.
+
+Transit Alert and its original app presentation, code and project assets are independent project work.
+
+Transit Alert is not operated by, affiliated with, or endorsed by Transport Victoria, PTV, Metro Trains Melbourne, V/Line, Yarra Trams, or any other transport authority.
