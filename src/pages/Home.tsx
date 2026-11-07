@@ -930,21 +930,61 @@ const PLANNER_LINES = [
 
 const JOURNEY_DISRUPTION_TERMS = ["Delays", "Track work", "Service changes", "Incidents"] as const;
 
-// Victoria unified Zone 1 and Zone 2 myki pricing in January 2023, so almost
-// all metropolitan train/tram/bus travel uses one fare regardless of how many
-// zones a trip crosses. Fares are reviewed and typically increase every
-// January, so these figures are indicative only, not fetched live.
-// Confirm current pricing at https://www.ptv.vic.gov.au/tickets/myki/myki-money-and-myki-pass/.
-const MYKI_METRO_FARE_ESTIMATE = {
-  full: { twoHour: 5.3, daily: 10.6 },
-  concession: { twoHour: 2.65, daily: 5.3 },
+// Victorian metropolitan (Zone 1+2) myki pricing. Zones 1 and 2 were
+// unified in January 2023, so almost all metropolitan train/tram/bus travel
+// uses one fare. Fares change every January (and, in 2026, mid-year), so
+// these are indicative estimates, not live data. Each entry applies from its
+// `from` date (Melbourne local, inclusive) until the next one.
+// Sources: PTV metropolitan fares (1 Jan 2026: $5.70 2-hour / $11.40 daily
+// cap, concession $2.85 / $5.70) and the Victorian Government's half-price
+// fares announcement (1 Jun 2026 - 1 Jan 2027: $5.70 full-fare daily cap).
+// A concession value left null is not published here, so the UI shows it
+// as unavailable rather than guessing at rounding.
+type MykiFareSchedule = {
+  from: string;
+  label: string;
+  full: { twoHour: number; daily: number };
+  concession: { twoHour: number; daily: number } | null;
 };
 
-function estimateMykiFare(route: Station[], legs: JourneyLeg[]) {
+const MYKI_METRO_FARE_SCHEDULES: MykiFareSchedule[] = [
+  {
+    from: "2026-01-01",
+    label: "2026 metropolitan fares",
+    full: { twoHour: 5.7, daily: 11.4 },
+    concession: { twoHour: 2.85, daily: 5.7 },
+  },
+  {
+    from: "2026-06-01",
+    label: "Half-price fares (until 1 Jan 2027)",
+    full: { twoHour: 2.85, daily: 5.7 },
+    concession: null,
+  },
+  {
+    // Half-price period ends; 2027 pricing isn't known yet, so fall back to
+    // the last standard schedule and say so.
+    from: "2027-01-01",
+    label: "2026 standard fares (2027 pricing not yet confirmed)",
+    full: { twoHour: 5.7, daily: 11.4 },
+    concession: { twoHour: 2.85, daily: 5.7 },
+  },
+];
+
+function getMelbourneDateKey(now: Date) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Australia/Melbourne",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+}
+
+function estimateMykiFare(route: Station[], legs: JourneyLeg[], now: Date = new Date()) {
   if (route.length < 2) return null;
   const hasPaidLeg = legs.some((leg) => leg.mode === "train" || leg.mode === "tram" || leg.mode === "bus");
   if (!hasPaidLeg) return null;
-  return MYKI_METRO_FARE_ESTIMATE;
+  const today = getMelbourneDateKey(now);
+  return [...MYKI_METRO_FARE_SCHEDULES].reverse().find((schedule) => schedule.from <= today) ?? null;
 }
 
 function getJourneyCorridorLabels(route: Station[]) {
@@ -3935,17 +3975,23 @@ export default function Home() {
                       <div className="mt-2 grid grid-cols-2 gap-2">
                         <div className="rounded-xl bg-black/20 px-3 py-2">
                           <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-white/45">Full fare</p>
-                          <p className="mt-0.5 text-sm font-semibold text-white">${journeyFareEstimate.full.twoHour.toFixed(2)} <span className="text-white/45 font-normal">/ 2hr</span></p>
-                          <p className="text-xs text-white/55">${journeyFareEstimate.full.daily.toFixed(2)} daily cap</p>
+                          <p className="mt-0.5 text-sm font-semibold text-white">${journeyFareEstimate?.full.twoHour.toFixed(2)} <span className="text-white/45 font-normal">/ 2hr</span></p>
+                          <p className="text-xs text-white/55">${journeyFareEstimate?.full.daily.toFixed(2)} daily cap</p>
                         </div>
                         <div className="rounded-xl bg-black/20 px-3 py-2">
                           <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-white/45">Concession</p>
-                          <p className="mt-0.5 text-sm font-semibold text-white">${journeyFareEstimate.concession.twoHour.toFixed(2)} <span className="text-white/45 font-normal">/ 2hr</span></p>
-                          <p className="text-xs text-white/55">${journeyFareEstimate.concession.daily.toFixed(2)} daily cap</p>
+                          {journeyFareEstimate?.concession ? (
+                            <>
+                              <p className="mt-0.5 text-sm font-semibold text-white">${journeyFareEstimate?.concession?.twoHour.toFixed(2)} <span className="text-white/45 font-normal">/ 2hr</span></p>
+                              <p className="text-xs text-white/55">${journeyFareEstimate?.concession?.daily.toFixed(2)} daily cap</p>
+                            </>
+                          ) : (
+                            <p className="mt-0.5 text-xs text-white/55">Check PTV for current concession fares</p>
+                          )}
                         </div>
                       </div>
                       <p className="mt-2 text-[10px] leading-4 text-white/40">
-                        *Fare estimate only, based on standard metropolitan myki pricing. V/Line regional trips use separate distance-based fares — confirm exact pricing at ptv.vic.gov.au.
+                        *Fare estimate only ({journeyFareEstimate?.label}). V/Line regional trips use separate distance-based fares — confirm exact pricing at ptv.vic.gov.au.
                       </p>
                     </div>
                   )}
