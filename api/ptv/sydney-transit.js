@@ -10,10 +10,12 @@ import { feedBearing } from "../_lib/vehicle-bearing.js";
 // into the always-on Melbourne fetch.
 const SYDNEY_BUSES_URL = "https://api.transport.nsw.gov.au/v1/gtfs/vehiclepos/buses";
 const SYDNEY_LIGHT_RAIL_FEEDS = [
+  { key: "innerwest", url: "https://api.transport.nsw.gov.au/v2/gtfs/vehiclepos/lightrail/innerwest", operator: "Sydney Light Rail (Inner West)" },
   { key: "cbdandsoutheast", url: "https://api.transport.nsw.gov.au/v1/gtfs/vehiclepos/lightrail/cbdandsoutheast", operator: "Sydney Light Rail (CBD & South East)" },
   { key: "newcastle", url: "https://api.transport.nsw.gov.au/v1/gtfs/vehiclepos/lightrail/newcastle", operator: "Newcastle Light Rail" },
+  { key: "parramatta", url: "https://api.transport.nsw.gov.au/v1/gtfs/vehiclepos/lightrail/parramatta", operator: "Parramatta Light Rail" },
 ];
-const SYDNEY_METRO_URL = "https://api.transport.nsw.gov.au/v1/gtfs/vehiclepos/metro";
+const SYDNEY_METRO_URL = "https://api.transport.nsw.gov.au/v2/gtfs/vehiclepos/metro";
 
 // Loosely greater-Sydney/Central Coast/Illawarra — wide enough to keep every
 // real Sydney-network vehicle without also pulling in unrelated regional NSW

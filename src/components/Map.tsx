@@ -35,6 +35,7 @@ import { FREIGHT_TIMING_DATA, interpolatePositionAtTime, type NonPassengerServic
 import { fetchLiveBuses, type LiveBus } from "@/lib/live-buses";
 import { fetchBusTrip, fetchStationDepartures, fetchTrainTrip, fetchTramTrip, fetchSurfaceStopDepartures, type VerifiedDeparture, type TrainFormationSegment, type NonPassengerPassThrough } from "@/lib/timetable";
 import { fetchLiveTrams, type LiveTram } from "@/lib/live-trams";
+import { matchDeparturesToLiveVehicles, vehicleMatchesTripKey } from "@/lib/tram-run-matching";
 import { GENERATED_TRAM_ROUTE_BUNDLES } from "@/lib/generated-tram-routes";
 import type { GeneratedBusStop } from "@/lib/generated-bus-stops";
 import { GENERATED_VLINE_GTFS } from "@/lib/generated-vline-gtfs";
@@ -15166,7 +15167,7 @@ export function Map({
     ? liveBuses.find((bus) => bus.tripId === selectedBusSeed.tripId || bus.id === selectedBusSeed.id) ?? selectedBusSeed
     : null;
   const selectedTram = selectedTramSeed
-    ? liveTrams.find((tram) => tram.tripId === selectedTramSeed.tripId || tram.id === selectedTramSeed.id) ?? selectedTramSeed
+    ? liveTrams.find((tram) => (selectedTramSeed.tripId ? vehicleMatchesTripKey(tram, selectedTramSeed.tripId) : false) || tram.id === selectedTramSeed.id) ?? selectedTramSeed
     : null;
   const selectedStation = selectedDetail?.type === "station" ? selectedDetail.station : null;
   const selectedFollowTarget = selectedVehicle ?? selectedBus ?? selectedTram;
@@ -16152,7 +16153,7 @@ export function Map({
       // those vehicles don't share the train fleet's consist/tdn identity.
       if (focusedVehicleKey.startsWith("bus:")) {
         const requestedTripId = focusedVehicleKey.slice("bus:".length);
-        const bus = liveBuses.find((candidate) => (candidate.tripId ?? candidate.id) === requestedTripId);
+        const bus = liveBuses.find((candidate) => vehicleMatchesTripKey(candidate, requestedTripId));
         if (!bus) return;
         setSelectedDetail({ type: "bus", bus });
         safeFlyTo(mapRef.current, bus.lat, bus.lng, Math.max(mapRef.current?.getZoom() ?? 13, 14), { animate: true, duration: 0.85 });
@@ -16165,7 +16166,7 @@ export function Map({
           setSelectedDetail({ type: "tram", tram });
           safeFlyTo(mapRef.current, tram.lat, tram.lng, Math.max(mapRef.current?.getZoom() ?? 13, 14), { animate: true, duration: 0.85 });
         };
-        const tram = liveTrams.find((candidate) => (candidate.tripId ?? candidate.id) === requestedTripId);
+        const tram = liveTrams.find((candidate) => vehicleMatchesTripKey(candidate, requestedTripId));
         if (tram) {
           focusTram(tram);
           onFocusedVehicleHandled?.();
@@ -16180,7 +16181,7 @@ export function Map({
         void fetchLiveTrams()
           .then((allTrams) => {
             if (!isStillRequested()) return;
-            const match = allTrams.find((candidate) => (candidate.tripId ?? candidate.id) === requestedTripId);
+            const match = allTrams.find((candidate) => vehicleMatchesTripKey(candidate, requestedTripId));
             if (match) focusTram(match);
           })
           .catch(() => undefined)
@@ -19095,8 +19096,17 @@ export function Map({
               )}
             </div>
             <div className="rounded-xl border border-white/10 bg-white/5 p-2.5">
-              <p className="uppercase tracking-[0.16em] text-white/40">Operator</p>
-              <p className="mt-1 font-semibold text-white">{selectedDetail.tram.operator ?? "Yarra Trams"}</p>
+              <p className="uppercase tracking-[0.16em] text-white/40">{selectedDetail.tram.tripNumber || selectedDetail.tram.runRef ? "Trip" : "Operator"}</p>
+              {selectedDetail.tram.tripNumber || selectedDetail.tram.runRef ? (
+                <>
+                  <p className="mt-1 font-semibold text-white">{selectedDetail.tram.tripNumber ? `#${selectedDetail.tram.tripNumber}` : `Run ${selectedDetail.tram.runRef}`}</p>
+                  {selectedDetail.tram.startTime && (
+                    <p className="mt-0.5 text-[11px] text-white/50">Departed terminus {selectedDetail.tram.startTime.slice(0, 5)}</p>
+                  )}
+                </>
+              ) : (
+                <p className="mt-1 font-semibold text-white">{selectedDetail.tram.operator ?? "Yarra Trams"}</p>
+              )}
             </div>
             <div className="rounded-xl border border-white/10 bg-white/5 p-2.5">
               <p className="uppercase tracking-[0.16em] text-white/40">Position</p>
@@ -20342,7 +20352,16 @@ export function Map({
                   <p className="mt-3 text-xs leading-relaxed text-white/60">No scheduled departures available. Timetable information isn’t currently available for this stop.</p>
                 ) : displayDepartures.length ? (
                   <div className="mt-3 divide-y divide-white/10 overflow-hidden rounded-xl border border-white/10 bg-black/15">
-                    {displayDepartures.map((departure) => {
+                    {(() => {
+                    // Pair each departure with the live vehicle running THAT
+                    // run (fleet number / run ref first, then a same-route,
+                    // same-direction nearest guess), once for the whole board
+                    // so two upcoming services never share one vehicle.
+                    const boardIsTram = selectedDetail.stop.modes.includes("tram") && !selectedDetail.stop.modes.includes("bus");
+                    const departureVehicleMatches = boardIsTram
+                      ? matchDeparturesToLiveVehicles(displayDepartures, liveTrams, selectedDetail.stop.position)
+                      : matchDeparturesToLiveVehicles(displayDepartures, liveBuses, selectedDetail.stop.position);
+                    return displayDepartures.map((departure, departureIndex) => {
                       const expected = new Date(departure.expectedAt);
                       const scheduled = new Date(departure.scheduledAt);
                       const isLive = departure.status === "live";
@@ -20370,20 +20389,9 @@ export function Map({
                       // that against the live feed's tripId/id first, and
                       // only fall back to the proximity guess when no exact
                       // run match exists yet in the live feed.
-                      const liveTramMatch = stopModeIsTram
-                        ? (departure.runId && liveTrams.find((candidate) => (candidate.tripId ?? candidate.id) === departure.runId)) ||
-                          liveTrams.find((candidate) =>
-                            candidate.route === departure.route &&
-                            getDistanceInMetres([candidate.lat, candidate.lng], stopPosition) <= 1500,
-                          )
-                        : undefined;
-                      const liveBusMatch = !stopModeIsTram
-                        ? (departure.runId && liveBuses.find((candidate) => (candidate.tripId ?? candidate.id) === departure.runId)) ||
-                          liveBuses.find((candidate) =>
-                            candidate.route === departure.route &&
-                            getDistanceInMetres([candidate.lat, candidate.lng], stopPosition) <= 1500,
-                          )
-                        : undefined;
+                      const departureVehicleMatch = departureVehicleMatches[departureIndex];
+                      const liveTramMatch = stopModeIsTram ? (departureVehicleMatch?.vehicle as LiveTram | undefined) : undefined;
+                      const liveBusMatch = !stopModeIsTram ? (departureVehicleMatch?.vehicle as LiveBus | undefined) : undefined;
                       const isTrackableNow = Boolean(liveTramMatch || liveBusMatch);
                       return (
                         <button
@@ -20432,7 +20440,13 @@ export function Map({
                             <p className="mt-0.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-white/45">
                               <span className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 ${isTrackableNow ? "bg-emerald-500/15 text-emerald-300" : "bg-white/5 text-white/40"}`}>
                                 <span className={`h-1.5 w-1.5 rounded-full ${isTrackableNow ? "animate-pulse bg-emerald-400" : "bg-white/30"}`} />
-                                {isTrackableNow ? "Trackable now" : "Not tracked yet"}
+                                {!isTrackableNow
+                                  ? "Not tracked yet"
+                                  : departureVehicleMatch?.confidence === "estimated"
+                                    ? "Likely this one"
+                                    : departureVehicleMatch?.vehicle.fleetNumber
+                                      ? `${stopModeIsTram ? "Tram" : "Bus"} ${departureVehicleMatch.vehicle.fleetNumber}`
+                                      : "Trackable now"}
                               </span>
                               {departure.platform ? `Platform ${departure.platform}` : isLive ? "Live PTV update" : "Scheduled"}
                             </p>
@@ -20443,7 +20457,8 @@ export function Map({
                           </div>
                         </button>
                       );
-                    })}
+                    });
+                    })()}
                   </div>
                 ) : (
                   <p className="mt-3 text-xs leading-relaxed text-white/60">No scheduled departures available for this route at the moment.</p>

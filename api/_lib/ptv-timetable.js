@@ -1089,6 +1089,21 @@ function findNearestOfficialStop(mode, { route, lat, lng }) {
   return nearest.stop;
 }
 
+// `runs` is the departures response's expand=run map, keyed by run_ref (or
+// the legacy numeric run_id). vehicle_descriptor.id is the fleet number of
+// the tram/bus PTV has on that run, when it publishes one.
+export function surfaceRunIdentity(departure, runs) {
+  const text = (value) => (value === undefined || value === null || value === "" || value === -1 ? undefined : String(value).trim() || undefined);
+  const runRef = text(departure?.run_ref) ?? text(departure?.run_id);
+  const run = (runs && (runs[departure?.run_ref] || runs[departure?.run_id])) || {};
+  const vehicleId = text(run.vehicle_descriptor?.id);
+  return {
+    runRef,
+    ptvDirectionId: text(departure?.direction_id) ?? text(run.direction_id),
+    fleetNumber: vehicleId && /^\d+$/.test(vehicleId) ? vehicleId : undefined,
+  };
+}
+
 export async function getVerifiedSurfaceStopDepartures({ mode: modeName, route, lat, lng }) {
   const modeKey = String(modeName || "").toLowerCase() === "tram" ? "tram" : "bus";
   const routeType = modeKey === "tram" ? 1 : 2;
@@ -1172,6 +1187,10 @@ export async function getVerifiedSurfaceStopDepartures({ mode: modeName, route, 
         status: departure.cancelled ? "cancelled" : departure.estimated_departure_utc ? "live" : "scheduled",
         platform: departure.platform_number || undefined,
         runId: departure.run_id || undefined,
+        // Trip/run identity, so the client can pick THIS run's tram rather
+        // than any tram on the same route: run_ref (v3's run key), the
+        // vehicle PTV has assigned to the run, and v3's direction_id.
+        ...surfaceRunIdentity(departure, data.runs),
       };
     })
     .filter((departure) => !requestedRoute || departure.route.toLowerCase() === requestedRoute)

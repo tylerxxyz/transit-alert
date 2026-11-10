@@ -57,6 +57,8 @@ import { getVlineRouteMetaFromTripId, isGenericRegionalPlaceholder } from "@/lib
 import { fetchLiveBuses, type LiveBus } from "@/lib/live-buses";
 import { lookupBusFleetInfo } from "@/lib/bus-fleet";
 import { fetchLiveTrams, type LiveTram } from "@/lib/live-trams";
+import { vehicleMatchesTripKey } from "@/lib/tram-run-matching";
+import { GENERATED_TRAM_ROUTE_BUNDLES } from "@/lib/generated-tram-routes";
 import { fetchSydneyTransit } from "@/lib/sydney-transit";
 import busButtonIcon from "@/assets/icons/bus.png";
 import tramButtonIcon from "@/assets/icons/tram.png";
@@ -114,6 +116,9 @@ const TRAIN_BOARDING_HINTS: Record<string, { zone: string; reason: string }> = {
 };
 
 const SURFACE_PLANNER_STATIONS: Station[] = [
+  ...GENERATED_TRAM_ROUTE_BUNDLES.flatMap(bundle =>
+    [...bundle.forwardStops, ...bundle.reverseStops].map(stop => ({ name: stop.name, position: stop.position })),
+  ),
   { name: "Melbourne University", position: [-37.7982, 144.9605] },
   { name: "Balaclava Junction", position: [-37.8693, 144.9952] },
   { name: "Caulfield Junction", position: [-37.8772, 145.0242] },
@@ -1410,9 +1415,15 @@ function buildTramFleetTrips(vehicles: LiveTram[], region: "vic" | "nsw" = "vic"
       id: `tram-${region}-${vehicle.id}-${index}`,
       focusKey: `tram:${vehicle.tripId ?? vehicle.id}`,
       tdn: vehicle.fleetNumber ? `Tram ${vehicle.fleetNumber}` : `Route ${vehicle.route}`,
-      tripNumber: vehicle.route,
+      // The trip/run, not the route: two Route 86 trams are different
+      // services. Falls back to the route only when the feed gave no trip.
+      tripNumber: vehicle.tripNumber ?? vehicle.runRef ?? vehicle.route,
       line: operator,
-      route: vehicle.destination ? `To ${vehicle.destination}` : `Route ${vehicle.route}`,
+      route: [
+        `Route ${vehicle.route}`,
+        vehicle.destination ? `to ${vehicle.destination}` : "",
+        vehicle.startTime ? `(${vehicle.startTime.slice(0, 5)} trip)` : "",
+      ].filter(Boolean).join(" "),
       fleet: `tram:${region}-${slugifyFleetLabel(groupLabel)}` as TramClassFleetKey,
       status: vehicle.timestamp ? "running" : "upcoming",
       lineColor: "border border-emerald-400/25 bg-emerald-500/10 text-emerald-200",
@@ -2503,7 +2514,9 @@ export default function Home() {
     setAttachedJourneyServiceKey(trip.focusKey);
     setAttachedJourneyServiceLabel(
       hasPremiumAccess(accountPreferences)
-        ? `${trip.line} · TDN ${trip.tripNumber} · ${trip.route}`
+        ? trip.focusKey.startsWith("tram:") || trip.focusKey.startsWith("bus:")
+          ? `${trip.tdn} · ${trip.tripNumber && /^\d{4,}$/.test(trip.tripNumber) ? `Trip ${trip.tripNumber} · ` : ""}${trip.route}`
+          : `${trip.line} · TDN ${trip.tripNumber} · ${trip.route}`
         : getPublicFleetServiceLabel(trip),
     );
     setJourneyStartedAt((current) => current ?? new Date().toISOString());
@@ -3511,6 +3524,9 @@ export default function Home() {
           <button type="button" onClick={() => setLocation("/alerts/today")} className="flex w-full items-center gap-3 rounded-2xl px-3.5 py-3 text-left text-sm font-semibold text-white/70 transition hover:bg-white/8 hover:text-white">
             <Bell className="h-[18px] w-[18px]" /> Service alerts
           </button>
+          <button type="button" onClick={() => setLocation("/networks")} className="flex w-full items-center gap-3 rounded-2xl px-3.5 py-3 text-left text-sm font-semibold text-white/70 transition hover:bg-white/8 hover:text-white">
+            <MapPin className="h-[18px] w-[18px]" /> Australian networks
+          </button>
           {[
             { key: "fleets", label: "Fleet tracker", icon: Search },
             { key: "pid", label: "Station tracker", icon: Info },
@@ -4146,7 +4162,7 @@ export default function Home() {
                         // a plain trip_id lookup would miss most real attached trains.
                         const attachedSurfaceVehicle = isLiveSurfaceLeg && attachedTripId
                           ? (leg.mode === "bus" ? liveFleetBuses : liveFleetTrams).find(
-                              (candidate) => (candidate.tripId ?? candidate.id) === attachedTripId,
+                              (candidate) => vehicleMatchesTripKey(candidate, attachedTripId),
                             )
                           : undefined;
                         const attachedTrainVehicle = isLiveTrainLeg && attachedJourneyServiceKey

@@ -76,6 +76,12 @@ export type SurfaceStopDeparturesPayload = {
     status: "scheduled" | "live" | "cancelled";
     platform?: string;
     runId?: string;
+    /** PTV v3 run_ref — the run this departure belongs to. */
+    runRef?: string;
+    /** Fleet number of the vehicle PTV has assigned to this run, when published. */
+    fleetNumber?: string;
+    /** PTV v3 direction_id. */
+    ptvDirectionId?: string;
   }>;
   generatedAt?: string;
   source?: string;

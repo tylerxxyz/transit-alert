@@ -1,5 +1,11 @@
 # TransitAlert
 
+The current self-hosted application serving transit-alert.com is maintained in
+[transit-alert-selfhost](https://github.com/tylerbnobleday-cmyk/transit-alert-selfhost).
+This repository preserves the earlier Vite application and its development
+history. Both repositories belong to the same TransitAlert project; access to
+the self-hosted repository follows its existing GitHub visibility settings.
+
 TransitAlert is a free, independent public transit tracking web app for Melbourne, Australia. It
 gives commuters live tracking of buses, trams and trains using real-time GTFS transit data, along
 with bus bay locations and stop information — all in one lightweight, easy-to-use site. It runs
