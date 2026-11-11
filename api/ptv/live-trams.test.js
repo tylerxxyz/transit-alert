@@ -13,13 +13,13 @@ test("GTFS-R trams carry trip number, direction and start time, not just the rou
         id: "v1",
         vehicle: {
           position,
-          trip: { tripId: "03-86--7-T5-142606618", routeId: "aus:vic:vic-03-86:", startTime: "07:42:00", startDate: "20261110" },
+          trip: { tripId: "03-86--7-T5-142606618", startTime: "07:42:00", startDate: "20261110" },
           vehicle: { id: "3001" },
         },
       },
       {
         id: "v2",
-        vehicle: { position, trip: { tripId: "03-86--7-T5-142606619", routeId: "aus:vic:vic-03-86:" }, vehicle: { id: "3017" } },
+        vehicle: { position, trip: { tripId: "03-86--7-T5-142606619" }, vehicle: { id: "3017" } },
       },
     ],
   };
