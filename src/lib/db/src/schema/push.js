@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 import { appUsersTable } from "./auth.js";
 
 export const pushSubscriptionsTable = pgTable("push_subscriptions", {
@@ -6,6 +6,12 @@ export const pushSubscriptionsTable = pgTable("push_subscriptions", {
   p256dh: text("p256dh").notNull(),
   authKey: text("auth_key").notNull(),
   userId: text("user_id").references(() => appUsersTable.id, { onDelete: "cascade" }),
+  // Which alert category ids (see ALERT_FILTERS in TodaysAlerts.tsx) this
+  // subscription wants pushed. null means "every category" — the same
+  // behaviour every existing subscriber already had before this column
+  // existed, so adding it can never silently mute anyone.
+  notificationCategories: jsonb("notification_categories"),
+  notificationLines: jsonb("notification_lines"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   lastSeenAt: timestamp("last_seen_at").defaultNow().notNull(),
 });

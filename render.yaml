@@ -13,6 +13,26 @@ services:
         fromDatabase:
           name: transit-alert-db
           property: connectionString
+      # Set these in the Render dashboard. Without AUTH_SESSION_SECRET a
+      # random one is generated per restart, which logs everyone out.
+      - key: AUTH_SESSION_SECRET
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: PUBLIC_APP_URL
+        value: https://transit-alert.com
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: REGISTRATION_PHASE
+        sync: false
+      - key: APPROVED_DEBUG_TESTERS
+        sync: false
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        sync: false
 databases:
   - name: transit-alert-db
     plan: free

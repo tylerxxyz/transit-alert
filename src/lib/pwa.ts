@@ -49,15 +49,14 @@ export async function showAppNotification(title: string, options: NotificationOp
   const registration = await navigator.serviceWorker?.ready.catch(() => null);
   if (registration) {
     await registration.showNotification(title, {
-      icon: `${import.meta.env.BASE_URL}app-logo.svg`,
-      badge: `${import.meta.env.BASE_URL}app-logo.svg`,
+      icon: `${import.meta.env.BASE_URL}icons/app-icon-192.png`,
       ...options,
     });
     return true;
   }
 
   new Notification(title, {
-    icon: `${import.meta.env.BASE_URL}app-logo.svg`,
+    icon: `${import.meta.env.BASE_URL}icons/app-icon-192.png`,
     ...options,
   });
   return true;

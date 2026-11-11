@@ -18,53 +18,83 @@ function Write-HealthLog([string]$Message) {
 # Run the host check in this process. Spawning a nested PowerShell here could
 # leave the watchdog waiting indefinitely after Windows logon, so the tunnel
 # startup below was never reached.
-& $hostStart | Out-Null
-
-if (!(Test-Path -LiteralPath $cloudflaredPath)) {
-  throw "Cloudflare connector is missing: $cloudflaredPath"
+try {
+  & $hostStart
+} catch {
+  # A failure here used to kill this entire script (ErrorActionPreference =
+  # Stop), which meant the Cloudflare tunnel logic below was never reached
+  # either -- a transient local-host problem (missing build, port still
+  # settling after boot, etc.) took the public tunnel down with it. Log it
+  # and keep going; the supervisor calls this script again in 15s so the
+  # host gets retried, and the tunnel stays managed in the meantime.
+  Write-HealthLog "Local host start failed: $($_.Exception.Message)"
 }
-if (!(Test-Path -LiteralPath $tokenPath)) {
-  throw "Cloudflare tunnel token is missing: $tokenPath"
-}
-if (!(Test-Path -LiteralPath $configPath)) {
-  throw "Cloudflare tunnel config is missing: $configPath"
-}
 
-New-Item -ItemType Directory -Path $publicDir -Force | Out-Null
-
-$running = $null
-if (Test-Path -LiteralPath $pidPath) {
-  $savedPid = (Get-Content -LiteralPath $pidPath -ErrorAction SilentlyContinue | Select-Object -First 1).Trim()
-  if ($savedPid) {
-    $candidate = Get-Process -Id $savedPid -ErrorAction SilentlyContinue
-    if ($candidate -and $candidate.ProcessName -eq "cloudflared") {
-      $running = $candidate
-    }
+# beta.transit-alert.com (port 3201) had no watchdog: after a reboot or a
+# crash it stayed down (Cloudflare 502) until someone restarted it by hand.
+# start-beta.ps1 returns immediately when the beta is already healthy.
+$betaStart = 'C:\Users\tyler\Documents\Codex\2026-10-20\i-w\work\transit-alert-selfhost\start-beta.ps1'
+if (Test-Path -LiteralPath $betaStart) {
+  try {
+    & $betaStart | Out-Null
+  } catch {
+    Write-HealthLog "Beta host start failed: $($_.Exception.Message)"
   }
 }
-if (-not $running) {
-  $running = Get-Process cloudflared -ErrorAction SilentlyContinue | Select-Object -First 1
+
+# The tunnel serving transit-alert.com is the connector for transit-alert-db.yml,
+# which the host start above brings back whenever it's missing. The old logic
+# here adopted the first cloudflared it found (which could be an unrelated
+# tunnel) and crashed on a blank pid file, so it hadn't run since September.
+# Only that one connector is ever restarted, and only when the local app is
+# healthy but the public site isn't reachable, so an internet or app outage
+# can't turn into repeated restarts.
+$connectorConfig = 'transit-alert-db.yml'
+$healthStatePath = Join-Path $publicDir "tunnel-health.json"
+$state = @{ lastCheckedAt = $null; lastRestartAt = $null; consecutiveFailures = 0 }
+if (Test-Path -LiteralPath $healthStatePath) {
+  try {
+    $loaded = Get-Content -LiteralPath $healthStatePath -Raw | ConvertFrom-Json
+    $state.lastCheckedAt = $loaded.lastCheckedAt
+    $state.lastRestartAt = $loaded.lastRestartAt
+    $state.consecutiveFailures = [int]$loaded.consecutiveFailures
+  } catch {
+    # Corrupt state: start again from the defaults above.
+  }
 }
 
-if ($running) {
-  Set-Content -LiteralPath $pidPath -Value $running.Id -Encoding ASCII
+if ($state.lastCheckedAt -and ((Get-Date) - [datetime]$state.lastCheckedAt).TotalSeconds -lt 20) {
   exit 0
 }
 
-Write-HealthLog "Cloudflare connector was offline; starting a replacement using HTTP/2."
-$process = Start-Process `
-  -FilePath $cloudflaredPath `
-  -ArgumentList @("--config", $configPath, "tunnel", "--protocol", "http2", "--no-autoupdate", "run", "--token-file", $tokenPath) `
-  -WorkingDirectory $repoRoot `
-  -WindowStyle Hidden `
-  -RedirectStandardOutput $outLog `
-  -RedirectStandardError $errLog `
-  -PassThru
-
-Set-Content -LiteralPath $pidPath -Value $process.Id -Encoding ASCII
-Start-Sleep -Seconds 3
-if (-not (Get-Process -Id $process.Id -ErrorAction SilentlyContinue)) {
-  Write-HealthLog "Cloudflare connector exited during startup. See cloudflared.err.log."
-  throw "Cloudflare connector exited during startup."
+function Test-Healthy([string]$Url) {
+  try {
+    return (Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 10).StatusCode -eq 200
+  } catch {
+    return $false
+  }
 }
-Write-HealthLog "Cloudflare connector started successfully on PID $($process.Id)."
+
+$state.lastCheckedAt = (Get-Date).ToString("o")
+if (Test-Healthy "https://transit-alert.com/_health") {
+  $state.consecutiveFailures = 0
+} elseif (Test-Healthy "http://127.0.0.1:3200/_health") {
+  $state.consecutiveFailures += 1
+  $recentlyRestarted = $state.lastRestartAt -and ((Get-Date) - [datetime]$state.lastRestartAt).TotalMinutes -lt 5
+  if ($state.consecutiveFailures -ge 3 -and -not $recentlyRestarted) {
+    $connector = Get-CimInstance Win32_Process -Filter "Name = 'cloudflared.exe'" -ErrorAction SilentlyContinue |
+      Where-Object { $_.CommandLine -like "*$connectorConfig*" } |
+      Select-Object -First 1
+    if ($connector) {
+      Write-HealthLog "Local app is healthy but transit-alert.com is unreachable after $($state.consecutiveFailures) checks; restarting its tunnel connector."
+      Stop-Process -Id $connector.ProcessId -Force -ErrorAction SilentlyContinue
+      $state.lastRestartAt = (Get-Date).ToString("o")
+      $state.consecutiveFailures = 0
+    }
+  }
+} else {
+  # The app itself is down: the host start above is already handling that.
+  $state.consecutiveFailures = 0
+}
+$state | ConvertTo-Json | Set-Content -LiteralPath $healthStatePath -Encoding UTF8
+exit 0

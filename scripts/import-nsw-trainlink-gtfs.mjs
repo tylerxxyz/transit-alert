@@ -32,6 +32,9 @@ function csv(text) {
       row.push(field); if (row.some(Boolean)) rows.push(row); row = []; field = "";
     } else field += ch;
   }
+  // Flush the last row when the file doesn't end with a newline; it used to
+  // be dropped silently.
+  if (field || row.length) { row.push(field); if (row.some(Boolean)) rows.push(row); }
   const headers = rows.shift().map((value) => value.replace(/^﻿/, ""));
   return rows.map((values) => Object.fromEntries(headers.map((key, index) => [key, values[index] ?? ""])));
 }

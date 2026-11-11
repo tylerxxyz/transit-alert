@@ -1,3 +1,4 @@
+import { feedBearing } from "../_lib/vehicle-bearing.js";
 import GtfsRealtimeBindings from "gtfs-realtime-bindings";
 import { isPtvV3Configured, ptvV3Fetch } from "../_lib/ptv-v3.js";
 import { getVerifiedTrainMarkerDestination, resolveStaticTripIdByRouteAndStartTime } from "../_lib/ptv-timetable.js";
@@ -381,7 +382,7 @@ function buildNswLiveTrains(feed) {
         status: "on_time",
         timestamp: timestamp ? new Date(timestamp * 1000).toISOString() : undefined,
         direction: directionId === 0 ? "up" : directionId === 1 ? "down" : destination === "Southern Cross" ? "city-bound" : "outbound",
-        heading: typeof position.bearing === "number" ? position.bearing : undefined,
+        heading: feedBearing(position),
         trainType: serviceLabel.includes("Xplorer") ? "NSW TrainLink Xplorer" : "NSW TrainLink XPT",
         consist,
         // Frontend summary parsing (getVehicleOriginFallback/getVehicleStoppingPattern
@@ -454,7 +455,7 @@ function buildSydneyTrainsLiveTrains(feed, fleetLookup) {
         status: "on_time",
         timestamp: timestamp ? new Date(timestamp * 1000).toISOString() : undefined,
         direction: directionId === 0 ? "up" : directionId === 1 ? "down" : "outbound",
-        heading: typeof position.bearing === "number" ? position.bearing : undefined,
+        heading: feedBearing(position),
         trainType: fleetClass ?? "Sydney Trains",
         consist,
         serviceDescription: [
@@ -510,6 +511,7 @@ function buildPtvLiveTrains(feed, source) {
         lng: longitude,
         line: resolvedLine,
         destination: resolvedLine,
+        destinationIsFallback: true,
         status: "on_time",
         timestamp: timestamp ? new Date(timestamp * 1000).toISOString() : undefined,
         // V/Line's own GTFS direction_id convention is the reverse of Metro's:
@@ -524,7 +526,7 @@ function buildPtvLiveTrains(feed, source) {
         direction: source.key === "vline"
           ? (directionId === 0 ? "down" : "up")
           : (directionId === 0 ? "up" : "down"),
-        heading: typeof position.bearing === "number" ? position.bearing : undefined,
+        heading: feedBearing(position),
         trainType: source.trainType,
         consist,
         serviceDescription: resolvedLine,
@@ -557,7 +559,7 @@ function buildPtvV3LiveTrains(data) {
         status: String(run.status || "on_time").toLowerCase(),
         timestamp: new Date().toISOString(),
         direction: Number(run.direction_id) === 0 ? "up" : "down",
-        heading: Number.isFinite(Number(position.bearing)) ? Number(position.bearing) : undefined,
+        heading: feedBearing(position),
         trainType: String(descriptor.description || "Metro Train"),
         consist: normaliseConsistLabel(descriptor.id, descriptor.description),
         serviceDescription: [routeLabel, destination].filter(Boolean).join(" · "),
@@ -729,6 +731,7 @@ async function refreshLiveTrains({ ptvSubscriptionKey, ptvV3Configured, nswTrans
       tripId: effectiveTripId,
       origin: verifiedJourney.origin,
       destination: verifiedJourney.destination,
+      destinationIsFallback: false,
       direction,
       serviceDescription: `${train.line} · ${verifiedJourney.origin} → ${verifiedJourney.destination}`,
     };
@@ -741,7 +744,7 @@ async function refreshLiveTrains({ ptvSubscriptionKey, ptvV3Configured, nswTrans
   return { responses, trains };
 }
 
-// Reused by push.js's 430M service-change check — that runs on its own
+// Reused by background service checks — those run on their own
 // background schedule, separate from any inbound HTTP request, so it reads
 // whatever this same in-memory cache already holds rather than triggering
 // a second, redundant PTV fetch of its own. In practice this is fresh
@@ -749,7 +752,57 @@ async function refreshLiveTrains({ ptvSubscriptionKey, ptvV3Configured, nswTrans
 // request refreshes it); if nobody has polled recently it can be briefly
 // stale or empty, which just means that check quietly tries again next
 // cycle rather than firing on stale data.
+export function getFreshCachedLiveTrains() {
+  return Date.now() - liveTrainCache.loadedAt <= 5 * 60_000 ? liveTrainCache.trains : [];
+}
+
 export function getCachedLiveTrains() {
+  return liveTrainCache.trains;
+}
+
+// getCachedLiveTrains() alone only reflects whatever a real /api/ptv/live-trains
+// request last populated — with no traffic in the last poll window that cache
+// can be stale or empty. Background jobs (fleet-sighting logging) that run on
+// their own timer, independent of real requests, need to actively trigger a
+// refresh rather than hope someone else's request happened to warm it first.
+export async function ensureLiveTrainsFresh() {
+  const ptvSubscriptionKey =
+    process.env.PTV_SUBSCRIPTION_KEY ||
+    process.env.PTV_subscription_key ||
+    process.env.OCP_APIM_SUBSCRIPTION_KEY ||
+    process.env.PTV_API_KEY;
+  const nswTransportApiKey =
+    process.env.NSW_TRANSPORT_API_KEY ||
+    process.env.TRANSPORT_NSW_API_KEY ||
+    process.env.TFNSW_API_KEY ||
+    process.env.NSW_OPENDATA_API_KEY;
+  const ptvV3Configured = isPtvV3Configured();
+
+  if (!ptvSubscriptionKey && !ptvV3Configured && !nswTransportApiKey) {
+    return liveTrainCache.trains;
+  }
+
+  const cacheAge = Date.now() - liveTrainCache.loadedAt;
+  if (liveTrainCache.trains.length > 0 && cacheAge < LIVE_TRAIN_CACHE_MS) {
+    return liveTrainCache.trains;
+  }
+
+  if (Date.now() < liveTrainCooldownUntil && liveTrainCache.trains.length > 0 && cacheAge < LIVE_TRAIN_STALE_MS) {
+    return liveTrainCache.trains;
+  }
+
+  if (!liveTrainRefreshPromise) {
+    liveTrainRefreshPromise = refreshLiveTrains({ ptvSubscriptionKey, ptvV3Configured, nswTransportApiKey }).finally(() => {
+      liveTrainRefreshPromise = null;
+    });
+  }
+
+  try {
+    await liveTrainRefreshPromise;
+  } catch (error) {
+    console.warn("[live-trains] background refresh failed:", error?.message ?? error);
+  }
+
   return liveTrainCache.trains;
 }
 

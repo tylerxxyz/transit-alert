@@ -1,4 +1,4 @@
-import { loadTimetable, readIndexedBusStopTimes, normaliseStationName } from "./ptv-timetable.js";
+import { loadTimetable, readIndexedBusStopTimes, readIndexedBusShape, normaliseStationName } from "./ptv-timetable.js";
 
 // Real, structural multi-modal journey planning over the official GTFS
 // schedule (train + V/Line + tram + bus). Every route, stop, and headsign
@@ -142,7 +142,7 @@ function bestBusPatterns(mode) {
   return byRouteDirection;
 }
 
-function addStopSequenceEdges(nodes, adjacency, modeKey, displayMode, mode, stopTimes, routeKey, routeLabel, fallbackHeadsign) {
+function addStopSequenceEdges(nodes, adjacency, modeKey, displayMode, mode, stopTimes, routeKey, routeLabel, fallbackHeadsign, shapeId) {
   for (let index = 0; index < stopTimes.length - 1; index += 1) {
     const current = stopTimes[index];
     const next = stopTimes[index + 1];
@@ -172,6 +172,7 @@ function addStopSequenceEdges(nodes, adjacency, modeKey, displayMode, mode, stop
       routeLabel,
       headsign: next.stopHeadsign || fallbackHeadsign || nextStop.name,
       seconds,
+      shapeId,
     });
   }
 }
@@ -182,13 +183,20 @@ function addStopSequenceEdges(nodes, adjacency, modeKey, displayMode, mode, stop
 // stop is frequently named after the street/cross-street instead. Record it
 // as a searchable alias for that trip's last stop so typing the public
 // destination name still resolves, alongside the real stop names.
+// Rail replacement buses/coaches are scheduled under the train feeds but only
+// run on specific closure dates. This graph ignores service dates, so keeping
+// them would route every rider onto a replacement bus that usually isn't
+// running (and label it a train). Live notices cover them when they are.
+const RAIL_REPLACEMENT_ROUTE = /replacement (?:bus|coach)|rail replacement/i;
+
 function addPatternEdges(nodes, adjacency, modeKey, displayMode, mode, patterns, destinationAliases) {
   for (const { trip, stopTimes } of patterns.values()) {
     const route = mode.routes.get(trip.routeId);
     const routeLabel = String(route?.shortName || route?.longName || trip.routeId || displayMode).trim();
+    if (displayMode === "train" && RAIL_REPLACEMENT_ROUTE.test(`${route?.shortName ?? ""} ${route?.longName ?? ""} ${routeLabel}`)) continue;
     addStopSequenceEdges(
       nodes, adjacency, modeKey, displayMode, mode, stopTimes,
-      `${modeKey}:${trip.routeId}:${trip.directionId}`, routeLabel, trip.destination,
+      `${modeKey}:${trip.routeId}:${trip.directionId}`, routeLabel, trip.destination, trip.shapeId,
     );
 
     const lastStop = stopTimes.at(-1);
@@ -492,6 +500,11 @@ function buildLegsFromEdges(graph, originNodeId, edges) {
       stopsCount: segmentStops,
       approxSeconds: segmentSeconds,
       distanceMetres: activeEdge.mode === "walk" ? activeEdge.distanceMetres : undefined,
+      fromLat: fromNode.lat,
+      fromLng: fromNode.lng,
+      toLat: toNode.lat,
+      toLng: toNode.lng,
+      shapeId: activeEdge.shapeId,
     });
   };
 
@@ -516,6 +529,54 @@ function buildLegsFromEdges(graph, originNodeId, edges) {
   return { stops, legs };
 }
 
+// A route's full real shape covers its whole terminus-to-terminus path;
+// most legs only ride part of it. Find the shape points nearest the leg's
+// actual boarding and alighting stops and slice between them, so the drawn
+// line matches the real road for exactly the portion of the route ridden —
+// not the model's stop-to-stop straight lines this replaces, and not the
+// bus's whole route either.
+function trimShapeToLeg(shapePoints, fromLat, fromLng, toLat, toLng) {
+  if (shapePoints.length < 2) return [];
+  const distanceSquared = (point, lat, lng) => (point[0] - lat) ** 2 + (point[1] - lng) ** 2;
+  let fromIndex = 0;
+  let fromBest = Infinity;
+  let toIndex = shapePoints.length - 1;
+  let toBest = Infinity;
+  for (let index = 0; index < shapePoints.length; index += 1) {
+    const point = shapePoints[index];
+    const fromDistance = distanceSquared(point, fromLat, fromLng);
+    if (fromDistance < fromBest) {
+      fromBest = fromDistance;
+      fromIndex = index;
+    }
+    const toDistance = distanceSquared(point, toLat, toLng);
+    if (toDistance < toBest) {
+      toBest = toDistance;
+      toIndex = index;
+    }
+  }
+  if (fromIndex === toIndex) return [];
+  return fromIndex < toIndex
+    ? shapePoints.slice(fromIndex, toIndex + 1)
+    : [...shapePoints.slice(toIndex, fromIndex + 1)].reverse();
+}
+
+// Real GTFS shapes only exist for bus routes in this app right now (see
+// readIndexedBusShape) — train/tram legs still draw as stop-to-stop lines on
+// the frontend, unaffected by this. Attaching real geometry here, once, at
+// the point a plan is built, means every leg's shape is ready to draw
+// exactly as-is rather than needing a second lookup client-side.
+function attachRealBusShapes(legs) {
+  for (const leg of legs) {
+    if (leg.mode !== "bus" || !leg.shapeId) continue;
+    if (![leg.fromLat, leg.fromLng, leg.toLat, leg.toLng].every(Number.isFinite)) continue;
+    const shapePoints = readIndexedBusShape(leg.shapeId);
+    const trimmed = trimShapeToLeg(shapePoints, leg.fromLat, leg.fromLng, leg.toLat, leg.toLng);
+    if (trimmed.length >= 2) leg.shapePositions = trimmed;
+  }
+  return legs;
+}
+
 export async function planJourney({ originName, originLat, originLng, destinationName, destinationLat, destinationLng }) {
   const graph = await getGraph();
   const sources = resolvePlace(graph, { name: originName, lat: originLat, lng: originLng });
@@ -525,17 +586,27 @@ export async function planJourney({ originName, originLat, originLng, destinatio
   if (destinationCandidates.length === 0) return { found: false, reason: "destination-not-found" };
 
   const destinationNodeIds = destinationCandidates.map((candidate) => candidate.nodeId);
-  if (sources.some((source) => destinationNodeIds.includes(source.nodeId))) {
-    const stop = toStopSummary(graph.nodes.get(sources[0].nodeId));
-    return { found: true, alreadyThere: true, legs: [], stops: stop ? [stop] : [] };
+  // Report the destination stop that matched (not simply the nearest origin
+  // candidate) and how far it is: a current-location origin considers stops
+  // up to ORIGIN_SEARCH_RADIUS_METRES away, so "already there" can be a walk.
+  const destinationSource = sources.find((source) => destinationNodeIds.includes(source.nodeId));
+  if (destinationSource) {
+    const stop = toStopSummary(graph.nodes.get(destinationSource.nodeId));
+    return { found: true, alreadyThere: true, legs: [], stops: stop ? [stop] : [], walkFromOriginSeconds: destinationSource.walkSeconds || 0 };
   }
 
   const result = findPath(graph, sources, destinationNodeIds);
   if (!result) return { found: false, reason: "no-route" };
 
   const usedSource = sources.find((source) => source.nodeId === result.originNodeId) ?? sources[0];
-  const { stops, legs } = buildLegsFromEdges(graph, result.originNodeId, result.edges);
+  const { stops, legs: rawLegs } = buildLegsFromEdges(graph, result.originNodeId, result.edges);
   const walkFromOriginSeconds = usedSource.walkSeconds || 0;
+
+  // fromLat/fromLng/toLat/toLng/shapeId only exist to compute shapePositions
+  // above — internal plumbing, not part of the public leg shape callers rely on.
+  const legs = attachRealBusShapes(rawLegs).map(
+    ({ fromLat: _fromLat, fromLng: _fromLng, toLat: _toLat, toLng: _toLng, shapeId: _shapeId, ...leg }) => leg,
+  );
 
   return {
     found: true,

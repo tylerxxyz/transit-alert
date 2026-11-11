@@ -1,5 +1,11 @@
 # Transit Alert 🚆
 
+The current self-hosted application serving transit-alert.com is maintained in
+[transit-alert-selfhost](https://github.com/tylerbnobleday-cmyk/transit-alert-selfhost).
+This repository preserves the earlier Vite application and its development
+history. Both repositories belong to the same TransitAlert project; access to
+the self-hosted repository follows its existing GitHub visibility settings.
+
 **Transit Alert** is an independent Melbourne public transport app focused on accurate live transport information for people who actually use the network — including gunzels, commuters and testers.
 
 It is currently being developed as a **native-publishable app with a web version**, with iOS and Android support through the current app build.

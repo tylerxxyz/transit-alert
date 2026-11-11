@@ -45,6 +45,10 @@ export async function sendEmail({ to, subject, html, text }) {
   }
 }
 
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
+}
+
 function emailShell(title, bodyHtml) {
   return `<!doctype html>
 <html>
@@ -61,7 +65,7 @@ function emailShell(title, bodyHtml) {
 
 export function sendWelcomeEmail(user) {
   const html = emailShell(
-    `Welcome to TransitAlert, ${user.username}!`,
+    `Welcome to TransitAlert, ${escapeHtml(user.username)}!`,
     `<p style="font-size:14px;line-height:1.6;">Thanks for signing up. TransitAlert gives you live Melbourne trains, trams, buses and V/Line services, real disruption alerts, and a journey planner built on real GTFS data.</p>
      <p style="font-size:14px;line-height:1.6;">Jump back in any time to track your services live.</p>`,
   );
@@ -76,8 +80,8 @@ export function sendWelcomeEmail(user) {
 export function sendPasswordResetEmail(user, resetUrl) {
   const html = emailShell(
     "Reset your password",
-    `<p style="font-size:14px;line-height:1.6;">We received a request to reset the password for your TransitAlert account (${user.username}).</p>
-     <p style="margin:24px 0;"><a href="${resetUrl}" style="background:#0ea5e9;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;">Reset password</a></p>
+    `<p style="font-size:14px;line-height:1.6;">We received a request to reset the password for your TransitAlert account (${escapeHtml(user.username)}).</p>
+     <p style="margin:24px 0;"><a href="${escapeHtml(resetUrl)}" style="background:#0ea5e9;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;">Reset password</a></p>
      <p style="font-size:13px;line-height:1.6;color:#94a3b8;">This link expires in 1 hour. If you didn't request this, you can safely ignore this email.</p>`,
   );
   return sendEmail({

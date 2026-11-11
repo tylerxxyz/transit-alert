@@ -28,11 +28,6 @@ type LiveBusResponse =
       buses?: LiveBus[];
     };
 
-const BUS_REGISTRATION_IDENTITIES: Record<string, { fleetNumber: string; operator: string }> = {
-  BS07RE: { fleetNumber: "0186", operator: "Kinetic Melbourne" },
-  BS07IZ: { fleetNumber: "0179", operator: "CDC Melbourne" },
-};
-
 // Melbourne route/operator directory, based on the public "List of bus routes in
 // Melbourne" operator table. Kept in the client as well as the API so mocked and
 // cached vehicles retain the same operator name.
@@ -55,9 +50,6 @@ const BUS_ROUTE_OPERATORS = BUS_ROUTE_OPERATOR_GROUPS.reduce<Record<string, stri
   return directory;
 }, {});
 
-function normaliseRegistrationKey(value: unknown) {
-  return typeof value === "string" ? value.replace(/[^a-z0-9]/gi, "").toUpperCase() : "";
-}
 
 // Never returns a "CDC Melbourne / Ventura Bus Lines"-style joined guess —
 // that only ever meant "this route is shared by two operators," not "this
@@ -67,8 +59,9 @@ function normaliseRegistrationKey(value: unknown) {
 // operators with no vehicle match falls all the way to the generic fallback
 // instead of guessing which one.
 function resolveBusOperator(route: string, registration: unknown, provided: unknown) {
-  const registrationIdentity = BUS_REGISTRATION_IDENTITIES[normaliseRegistrationKey(registration)];
-  if (registrationIdentity) return registrationIdentity.operator;
+  // The bus fleet database is the source of truth. A small hardcoded table
+  // used to be checked first and contradicted it (BS07RE is CDC #186, not
+  // Kinetic #0186).
   const fleetInfo = lookupBusFleetInfo({ registration: typeof registration === "string" ? registration : undefined });
   if (fleetInfo) return fleetInfo.operator;
   const routeOperator = BUS_ROUTE_OPERATORS[route];
@@ -168,13 +161,13 @@ function normaliseLiveBus(raw: Partial<LiveBus> & Record<string, unknown>, index
         ? `bus-${index + 1}`
         : `Route ${route}`;
   const registration = normaliseLabel(raw.registration);
-  const registrationIdentity = BUS_REGISTRATION_IDENTITIES[normaliseRegistrationKey(registration)];
+  const registrationFleet = registration ? lookupBusFleetInfo({ registration }) : null;
 
   return {
     id: typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : `bus-${index}`,
     label,
     vehicleId: normaliseLabel(raw.vehicleId),
-    fleetNumber: registrationIdentity?.fleetNumber ?? normaliseLabel(raw.fleetNumber),
+    fleetNumber: normaliseLabel(raw.fleetNumber) ?? registrationFleet?.fleetNumber,
     registration,
     tripId: normaliseLabel(raw.tripId),
     lat: raw.lat,

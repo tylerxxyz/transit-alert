@@ -9,6 +9,8 @@
     "node": "22.x"
   },
   "scripts": {
+    "import:networks": "node scripts/import-australian-networks.mjs",
+    "verify:networks": "node --test api/_lib/australian-networks.test.js && node scripts/verify-australian-networks.mjs",
     "dev": "vite --config vite.config.ts --host 0.0.0.0",
     "build": "vite build --config vite.config.ts",
     "build:github-pages": "cross-env BASE_PATH=/transit-alert/ vite build --config vite.config.ts",

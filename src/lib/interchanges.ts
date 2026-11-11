@@ -106,11 +106,12 @@ export const INTERCHANGE_DATABASE: TransitInterchange[] = [
     trainLines: ["Cranbourne", "Pakenham", "Frankston"],
     tramRoutes: ["3", "3a", "64"],
     busRoutes: ["624", "900 SmartBus"],
+    notes: "Change here for: City Loop via Frankston · Metro Tunnel to Sunbury, Pakenham & Cranbourne · V/Line to Bairnsdale · Trams 3/3a & 64",
   },
   {
     name: "South Yarra",
     type: "major_interchange",
-    trainLines: ["Cranbourne", "Pakenham", "Frankston", "Sandringham"],
+    trainLines: ["Frankston", "Sandringham"],
     tramRoutes: ["3", "5", "6", "16", "58", "72", "78"],
     busRoutes: [],
   },
@@ -262,6 +263,15 @@ export const INTERCHANGE_DATABASE: TransitInterchange[] = [
     trainLines: ["Frankston"],
     tramRoutes: [],
     busRoutes: ["625", "630"],
+    notes: "Change here for: Bus 625 to Elsternwick or Chadstone · Bus 630 to Elwood or Monash University · Frankston Line services via the City Loop",
+  },
+  {
+    name: "McKinnon",
+    type: "local_interchange",
+    trainLines: ["Frankston"],
+    tramRoutes: [],
+    busRoutes: ["626"],
+    notes: "Change here for: Route 626 buses to Chadstone or Middle Brighton · Frankston Line services via the City Loop",
   },
   {
     name: "Gardenvale",
@@ -269,6 +279,7 @@ export const INTERCHANGE_DATABASE: TransitInterchange[] = [
     trainLines: ["Sandringham"],
     tramRoutes: [],
     busRoutes: ["630"],
+    notes: "Change here for: Bus 630 · Sandringham Line services to Flinders Street · Cross-city services to Werribee & Williamstown",
   },
   {
     name: "Elsternwick",
@@ -278,11 +289,20 @@ export const INTERCHANGE_DATABASE: TransitInterchange[] = [
     busRoutes: ["246", "603", "625"],
   },
   {
+    name: "North Brighton",
+    type: "local_interchange",
+    trainLines: ["Sandringham"],
+    tramRoutes: [],
+    busRoutes: ["626", "703", "823"],
+    notes: "Change here for: Bus 626, 703 & 823 · Sandringham Line services to Flinders Street · Cross-city services to Werribee, Williamstown & Laverton",
+  },
+  {
     name: "Glen Huntly",
     type: "local_interchange",
     trainLines: ["Frankston"],
     tramRoutes: ["67"],
     busRoutes: [],
+    notes: "Change here for: Route 67 trams to Melbourne University / Carnegie · Frankston Line services via the City Loop",
   },
   {
     name: "Carnegie",
@@ -308,9 +328,14 @@ export const INTERCHANGE_DATABASE: TransitInterchange[] = [
   {
     name: "Malvern",
     type: "local_interchange",
-    trainLines: ["Glen Waverley"],
+    // Real fact, not Glen Waverley (a genuinely different corridor Malvern
+    // isn't on at all) — Malvern sits on the Frankston line, which runs via
+    // the City Loop toward the CBD and via the Metro Tunnel toward Sunbury,
+    // Cranbourne and East Pakenham on the other side of the city.
+    trainLines: ["Frankston", "Sunbury", "Cranbourne", "East Pakenham"],
     tramRoutes: ["16"],
     busRoutes: [],
+    notes: "Change here for: Frankston Line City Loop services · Metro Tunnel services to Sunbury, Cranbourne & East Pakenham · Tram 16",
   },
 ];
 
@@ -355,15 +380,64 @@ export function getStationConnectionTags(
   return tags.slice(0, maxTags);
 }
 
+// Sunbury, Cranbourne and Pakenham/East Pakenham run through the Metro
+// Tunnel rather than the traditional City Loop — a real, current network
+// fact (not a guess) that a bare route list glosses over. Every other line
+// in this database still loops via Flagstaff/Melbourne Central/
+// Parliament/Flinders Street the old way.
+const METRO_TUNNEL_LINES = new Set(["Sunbury", "Cranbourne", "Pakenham", "East Pakenham"]);
+
+function joinWithAmpersand(items: string[]) {
+  if (items.length === 0) return "";
+  if (items.length === 1) return items[0];
+  return `${items.slice(0, -1).join(", ")} & ${items[items.length - 1]}`;
+}
+
+// A few entries use these as generic placeholders rather than a real named
+// line (e.g. the underground City Loop stations just list "City Loop"
+// itself, Footscray lists bare "V/Line" alongside its real named lines) —
+// those need their own wording rather than being joined as if they were a
+// specific line ("City Loop services via City Loop" reads absurd).
+const GENERIC_LINE_LABELS = new Set(["City Loop", "Metro", "V/Line", "Regional coach"]);
+
 export function getStationInterchangeSummary(stationName: string) {
   const interchange = getStationInterchange(stationName);
   if (!interchange) return null;
+  // A hand-written summary (real, current corridor names — e.g. "Metro
+  // Tunnel to Sunbury" rather than a bare route list) reads better than the
+  // generated version below for a station worth explaining in more detail,
+  // so it takes over the whole summary rather than being appended to it.
+  if (interchange.notes) return interchange.notes;
+
+  // Some entries name a V/Line corridor directly (Dandenong's "Gippsland
+  // V/Line") rather than the bare generic label — either way, these are
+  // long-distance regional services that never run via the City Loop and
+  // need their own clause, not to be joined as if they were a suburban line.
+  const vlineEntries = interchange.trainLines.filter((line) => /v\/line/i.test(line));
+  const namedCityLoopLines = interchange.trainLines.filter(
+    (line) => !METRO_TUNNEL_LINES.has(line) && !GENERIC_LINE_LABELS.has(line) && !/v\/line/i.test(line),
+  );
+  const tunnelLines = interchange.trainLines.filter((line) => METRO_TUNNEL_LINES.has(line));
+  const hasBareCityLoop = interchange.trainLines.includes("City Loop");
 
   const parts: string[] = [];
-  if (interchange.trainLines.length > 0) parts.push(`Train: ${interchange.trainLines.join(", ")}`);
-  if (interchange.tramRoutes.length > 0) parts.push(`Tram: ${interchange.tramRoutes.join(", ")}`);
-  if (interchange.busRoutes.length > 0) parts.push(`Bus: ${interchange.busRoutes.join(", ")}`);
-  if (interchange.coachLinks?.length) parts.push(`Coach: ${interchange.coachLinks.join(", ")}`);
+  if (namedCityLoopLines.length > 0) {
+    parts.push(`City Loop services via ${joinWithAmpersand(namedCityLoopLines)}`);
+  } else if (hasBareCityLoop) {
+    parts.push("City Loop services");
+  }
+  if (tunnelLines.length > 0) parts.push(`Metro Tunnel services to ${joinWithAmpersand(tunnelLines)}`);
+  if (vlineEntries.length > 0) {
+    const corridors = vlineEntries.map((line) => line.replace(/\s*v\/line\s*/i, "").trim()).filter(Boolean);
+    parts.push(corridors.length > 0 ? `V/Line services to ${joinWithAmpersand(corridors)}` : "V/Line regional services");
+  }
+  if (interchange.tramRoutes.length > 0) {
+    parts.push(interchange.tramRoutes.length === 1
+      ? `Route ${interchange.tramRoutes[0]} tram`
+      : `Trams ${joinWithAmpersand(interchange.tramRoutes)}`);
+  }
+  if (interchange.busRoutes.length > 0) parts.push(`Bus ${joinWithAmpersand(interchange.busRoutes)}`);
+  if (interchange.coachLinks?.length) parts.push(`Coach services to ${joinWithAmpersand(interchange.coachLinks)}`);
 
-  return parts.join(" · ");
+  return parts.length > 0 ? `Change here for: ${parts.join(" · ")}` : null;
 }

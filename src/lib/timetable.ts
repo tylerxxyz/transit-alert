@@ -13,9 +13,24 @@ export type VerifiedDeparture = {
   serviceDate: string;
 };
 
+export type NonPassengerPassThrough = {
+  trainNumber: string;
+  operator: string;
+  serviceType: "PASSING FREIGHT" | "HERITAGE SPECIAL" | "EMPTY CARS" | "NON-PASSENGER";
+  direction: "up" | "down";
+  expectedPassTime: string;
+  platform?: string;
+  trackingSource: "Estimated";
+  label: "DOES NOT STOP";
+};
+
 export type StationDeparturesPayload = {
   stationName: string;
   departures: VerifiedDeparture[];
+  // Freight/heritage/empty-car services that run through this station
+  // without stopping — a separate, non-GTFS source, never merged into
+  // `departures` so it can't affect real passenger ordering/next-service logic.
+  nonPassengerPassThroughs?: NonPassengerPassThrough[];
   generatedAt?: string;
   realtimeFeedAt?: string;
   scheduleUpdatedAt?: string;
@@ -61,6 +76,12 @@ export type SurfaceStopDeparturesPayload = {
     status: "scheduled" | "live" | "cancelled";
     platform?: string;
     runId?: string;
+    /** PTV v3 run_ref — the run this departure belongs to. */
+    runRef?: string;
+    /** Fleet number of the vehicle PTV has assigned to this run, when published. */
+    fleetNumber?: string;
+    /** PTV v3 direction_id. */
+    ptvDirectionId?: string;
   }>;
   generatedAt?: string;
   source?: string;
@@ -76,7 +97,7 @@ export type BusFormationSegment = {
 };
 
 export type VerifiedTrainStop = {
-  platformSource?: "LIVE" | "SCHEDULED" | "EXPECTED";
+  platformSource?: "LIVE" | "SCHEDULED" | "EXPECTED" | "static_direction" | "service_override";
   stopId: string;
   stopSequence: number;
   name: string;
@@ -149,6 +170,10 @@ export type JourneyPlanLeg = {
   stopsCount: number;
   approxSeconds: number;
   distanceMetres?: number;
+  // Real GTFS shape geometry trimmed to this leg's boarding/alighting stops
+  // (bus legs only, when the route's shape was found) — the actual road the
+  // bus drives, not a straight line jumping stop to stop.
+  shapePositions?: [number, number][];
 };
 
 export type JourneyPlanResult = {

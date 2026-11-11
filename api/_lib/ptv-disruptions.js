@@ -29,6 +29,10 @@ const MODE_GROUPS = {
   metro_bus: "bus",
   regional_bus: "bus",
   night_bus: "bus",
+  // PTV's "interstate_train" disruption mode is the Sydney-Melbourne XPT —
+  // the only interstate rail service it covers — so it gets its own
+  // structured group instead of falling through to a text-matched guess.
+  interstate_train: "xpt",
 };
 
 // V/Line's own GTFS route_short_name already groups every regional line into

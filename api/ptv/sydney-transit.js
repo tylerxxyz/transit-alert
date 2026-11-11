@@ -1,5 +1,6 @@
 import GtfsRealtimeBindings from "gtfs-realtime-bindings";
 import AdmZip from "adm-zip";
+import { feedBearing } from "../_lib/vehicle-bearing.js";
 
 // Opt-in Sydney layer (see LayerState.sydneyTransit in Map.tsx) — this is a
 // separate NSW Transport Open Data product from the "nswtrains" feed used for
@@ -9,10 +10,12 @@ import AdmZip from "adm-zip";
 // into the always-on Melbourne fetch.
 const SYDNEY_BUSES_URL = "https://api.transport.nsw.gov.au/v1/gtfs/vehiclepos/buses";
 const SYDNEY_LIGHT_RAIL_FEEDS = [
+  { key: "innerwest", url: "https://api.transport.nsw.gov.au/v2/gtfs/vehiclepos/lightrail/innerwest", operator: "Sydney Light Rail (Inner West)" },
   { key: "cbdandsoutheast", url: "https://api.transport.nsw.gov.au/v1/gtfs/vehiclepos/lightrail/cbdandsoutheast", operator: "Sydney Light Rail (CBD & South East)" },
   { key: "newcastle", url: "https://api.transport.nsw.gov.au/v1/gtfs/vehiclepos/lightrail/newcastle", operator: "Newcastle Light Rail" },
+  { key: "parramatta", url: "https://api.transport.nsw.gov.au/v1/gtfs/vehiclepos/lightrail/parramatta", operator: "Parramatta Light Rail" },
 ];
-const SYDNEY_METRO_URL = "https://api.transport.nsw.gov.au/v1/gtfs/vehiclepos/metro";
+const SYDNEY_METRO_URL = "https://api.transport.nsw.gov.au/v2/gtfs/vehiclepos/metro";
 
 // Loosely greater-Sydney/Central Coast/Illawarra — wide enough to keep every
 // real Sydney-network vehicle without also pulling in unrelated regional NSW
@@ -157,7 +160,7 @@ function buildSydneyBuses(feed, agencyLookup) {
         route,
         status: "live",
         timestamp: timestamp ? new Date(timestamp * 1000).toISOString() : undefined,
-        heading: typeof position.bearing === "number" ? position.bearing : undefined,
+        heading: feedBearing(position),
         operator,
       };
     })
@@ -188,7 +191,7 @@ function buildSydneyLightRail(feed, operator) {
         route,
         status: "live",
         timestamp: timestamp ? new Date(timestamp * 1000).toISOString() : undefined,
-        heading: typeof position.bearing === "number" ? position.bearing : undefined,
+        heading: feedBearing(position),
         operator,
       };
     })
@@ -224,7 +227,7 @@ function buildSydneyMetroTrains(feed) {
         status: "on_time",
         timestamp: timestamp ? new Date(timestamp * 1000).toISOString() : undefined,
         direction: directionId === 0 ? "up" : directionId === 1 ? "down" : "outbound",
-        heading: typeof position.bearing === "number" ? position.bearing : undefined,
+        heading: feedBearing(position),
         trainType: "Sydney Metro",
         consist: label || "Sydney Metro",
         serviceDescription: "Sydney Metro",

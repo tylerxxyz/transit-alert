@@ -1,8 +1,9 @@
+import { useEffect } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
-import { formatDistanceToNow } from "date-fns";
 import { ExternalLink, MessageCircle, RefreshCw, TrainFront, X } from "lucide-react";
 import { fetchConsistSnapshot } from "@/lib/transportvic-bot";
+import { formatRelativeTime } from "@/lib/relative-time";
 
 interface ChatPanelProps {
   isOpen: boolean;
@@ -35,8 +36,18 @@ export function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
     retry: false,
   });
 
+  // Overlay panel: Escape closes it, like the app's other dialogs.
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
+
   const updatedLabel = data?.as_of
-    ? formatDistanceToNow(new Date(data.as_of), { addSuffix: true })
+    ? formatRelativeTime(data.as_of)
     : null;
 
   return (
@@ -55,6 +66,9 @@ export function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
             animate={{ x: 0 }}
             exit={{ x: "100%" }}
             transition={{ type: "spring", damping: 25, stiffness: 200 }}
+            role="dialog"
+            aria-modal="true"
+            aria-label="430M Tracker Bot"
             className="fixed bottom-0 right-0 top-0 z-50 flex w-full flex-col border-l border-white/10 bg-card md:w-[430px]"
           >
             <div className="flex items-center justify-between border-b border-white/10 bg-white/5 p-5">

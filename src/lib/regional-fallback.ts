@@ -6,20 +6,24 @@
 // "V/Line". The 3-letter code is always present in tripId (e.g.
 // "01-SNH--6-T0-8381", "01-SER--6-T0-8326"), so this needs no geographic or
 // text-matching guess — it's a direct lookup.
+//
+// outbound is the service's real terminus (shown as "Southern Cross → X"),
+// not the corridor: an Echuca train is not going to Bendigo. serviceLabel
+// stays the corridor, which the line filters key on.
 export const VLINE_ROUTE_CODE_TO_LINE: Record<string, { outbound: string; inbound: string; serviceLabel: string }> = {
-  ABY: { outbound: "Seymour", inbound: "Southern Cross", serviceLabel: "Seymour line" },
-  ART: { outbound: "Ballarat", inbound: "Southern Cross", serviceLabel: "Ballarat line" },
+  ABY: { outbound: "Albury", inbound: "Southern Cross", serviceLabel: "Seymour line" },
+  ART: { outbound: "Ararat", inbound: "Southern Cross", serviceLabel: "Ballarat line" },
   BAT: { outbound: "Ballarat", inbound: "Southern Cross", serviceLabel: "Ballarat line" },
   BDE: { outbound: "Bairnsdale", inbound: "Southern Cross", serviceLabel: "Gippsland line" },
   BGO: { outbound: "Bendigo", inbound: "Southern Cross", serviceLabel: "Bendigo line" },
-  ECH: { outbound: "Bendigo", inbound: "Southern Cross", serviceLabel: "Bendigo line" },
+  ECH: { outbound: "Echuca", inbound: "Southern Cross", serviceLabel: "Bendigo line" },
   GEL: { outbound: "Waurn Ponds", inbound: "Southern Cross", serviceLabel: "Geelong line" },
-  MBY: { outbound: "Ballarat", inbound: "Southern Cross", serviceLabel: "Ballarat line" },
+  MBY: { outbound: "Maryborough", inbound: "Southern Cross", serviceLabel: "Ballarat line" },
   SER: { outbound: "Seymour", inbound: "Southern Cross", serviceLabel: "Seymour line" },
-  SNH: { outbound: "Seymour", inbound: "Southern Cross", serviceLabel: "Seymour line" },
-  SWL: { outbound: "Bendigo", inbound: "Southern Cross", serviceLabel: "Bendigo line" },
-  TRN: { outbound: "Bairnsdale", inbound: "Southern Cross", serviceLabel: "Gippsland line" },
-  WBL: { outbound: "Waurn Ponds", inbound: "Southern Cross", serviceLabel: "Geelong line" },
+  SNH: { outbound: "Shepparton", inbound: "Southern Cross", serviceLabel: "Seymour line" },
+  SWL: { outbound: "Swan Hill", inbound: "Southern Cross", serviceLabel: "Bendigo line" },
+  TRN: { outbound: "Traralgon", inbound: "Southern Cross", serviceLabel: "Gippsland line" },
+  WBL: { outbound: "Warrnambool", inbound: "Southern Cross", serviceLabel: "Geelong line" },
 };
 
 export function isGenericRegionalPlaceholder(value?: string | null) {
