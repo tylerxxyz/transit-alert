@@ -1085,6 +1085,7 @@ function createLiveTrainIcon(
     dimmed?: boolean;
     hideSecondaryLabel?: boolean;
     routeStops?: Station[];
+    viaCityLoop?: boolean;
   },
 ) {
   const markerLine = /HCMT/i.test(getVehicleDisplayType(vehicle)) ? "Metro Tunnel" : vehicle.line;
@@ -1134,7 +1135,7 @@ function createLiveTrainIcon(
   const finalDestinationLabel = destinationLabel.split("→").at(-1)?.trim() || destinationLabel;
   const markerViaLabel = /HCMT/i.test(getVehicleDisplayType(vehicle))
     ? "Metro Tunnel"
-    : /City Loop/i.test(destinationLabel)
+    : options?.viaCityLoop || /City Loop/i.test(destinationLabel)
       ? "City Loop"
       : destinationLabel.includes("→")
         // Kept full ("Flinders Street") — see originLabelFull above.
@@ -10522,6 +10523,16 @@ type TramPatternStop = {
   status?: "passed" | "upcoming" | "skipped";
 };
 
+// Reduces a train destination such as "Flinders Street via City Loop" or
+// "Flinders Street via City Loop → Werribee" to the terminus the train is
+// currently heading for ("Flinders Street"), for station-name lookups.
+function stripTrainDestinationVia(destination: string) {
+  return (destination.split("→")[0] ?? "")
+    .replace(/\s+via\s+.+$/i, "")
+    .replace(/\s+Station$/i, "")
+    .trim();
+}
+
 function getMetroStoppingPatternStations(vehicle: LiveTrain, fullRoute = false): Station[] {
   const searchable = `${vehicle.line} ${vehicle.destination}`.toLowerCase();
   const lineKey = (
@@ -10541,8 +10552,12 @@ function getMetroStoppingPatternStations(vehicle: LiveTrain, fullRoute = false):
     new globalThis.Map(LINES[lineKey].map((station) => [station.name, station])).values(),
   );
   if (fullRoute) return stations;
+  // The server can append a verified "via City Loop" to the destination
+  // (see getVerifiedTrainMarkerDestination), so compare on the bare
+  // terminus name or a city-bound train would lose its direction.
+  const destinationStationName = stripTrainDestinationVia(vehicle.destination).toLowerCase();
   const destinationIndex = stations.findIndex(
-    (station) => station.name.toLowerCase() === vehicle.destination.trim().toLowerCase(),
+    (station) => station.name.toLowerCase() === destinationStationName,
   );
 
   if (destinationIndex === 0) {
@@ -15246,7 +15261,7 @@ export function Map({
       if (destinationName.toLowerCase() !== currentName.toLowerCase()) {
         fallbackStops.push({
           name: destinationName,
-          position: findStationCoordinate(destinationName) ?? [selectedVehicle.lat, selectedVehicle.lng],
+          position: findStationCoordinate(stripTrainDestinationVia(destinationName)) ?? [selectedVehicle.lat, selectedVehicle.lng],
         });
       }
       return fallbackStops;
@@ -17603,6 +17618,7 @@ export function Map({
                   dimmed: isZoomedOut && priority !== "high" && !isSelected && !isHovered,
                   hideSecondaryLabel,
                   routeStops: isSelected && selectedTrainTrip?.tripId === vehicle.tripId ? selectedVerifiedHeadingStops : undefined,
+                  viaCityLoop: isSelected && selectedTrainTrip?.tripId === vehicle.tripId && selectedTrainUsesCityLoop,
                 })}
                 zIndexOffset={isSelected ? 4600 : isHovered ? 4200 : hideSecondaryLabel ? 3600 : 3900}
                 riseOnHover
@@ -18475,10 +18491,10 @@ export function Map({
                   {selectedVehicleOriginLabel}
                 </p>
               </div>
-              <div className="mt-6 flex items-center gap-2 text-emerald-300/80">
-                <div className="h-px w-5 bg-emerald-400/30" />
+              <div className="mt-6 flex items-center gap-2" style={{ color: `${selectedVehicleAccent}cc` }}>
+                <div className="h-px w-5" style={{ backgroundColor: `${selectedVehicleAccent}4d` }} />
                 <ArrowRight className="h-4 w-4" />
-                <div className="h-px w-5 bg-emerald-400/30" />
+                <div className="h-px w-5" style={{ backgroundColor: `${selectedVehicleAccent}4d` }} />
               </div>
               <div className="min-w-0 text-right">
                 <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/40">
@@ -18493,11 +18509,19 @@ export function Map({
             <div className="mt-3 flex flex-wrap gap-2">
               <span
                 className="rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide"
-                style={{
-                  border: `1px solid ${selectedVehicleIsRegional ? "rgba(196,181,253,0.30)" : "rgba(52,211,153,0.20)"}`,
-                  background: selectedVehicleIsRegional ? "rgba(124,58,237,0.18)" : "rgba(16,185,129,0.10)",
-                  color: selectedVehicleIsRegional ? "#ede9fe" : "#d1fae5",
-                }}
+                style={
+                  selectedVehicleIsRegional
+                    ? {
+                        border: "1px solid rgba(196,181,253,0.30)",
+                        background: "rgba(124,58,237,0.18)",
+                        color: "#ede9fe",
+                      }
+                    : {
+                        border: `1px solid ${selectedVehicleAccent}33`,
+                        background: `${selectedVehicleAccent}1a`,
+                        color: selectedVehicleAccent,
+                      }
+                }
               >
                 {selectedVehicleSnapshot?.position?.vehicle_stop_status === "STOPPED_AT"
                   ? `Stopped at ${selectedVehicleSnapshot.position.current_stop}`
