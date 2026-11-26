@@ -12,6 +12,7 @@ import TodaysAlerts from "@/pages/TodaysAlerts";
 import NotFound from "@/pages/not-found";
 
 const CRASH_REPORT_STORAGE_KEY = "transitalert-last-crash-report";
+const AustralianNetworks = React.lazy(() => import("@/pages/AustralianNetworks"));
 
 function buildCrashReport(error: unknown, source = "runtime") {
   const resolvedError = error instanceof Error ? error : new Error(String(error || "Unknown error"));
@@ -53,6 +54,7 @@ function Router() {
       <Route path="/login" component={Login} />
       <Route path="/reset-password" component={ResetPassword} />
       <Route path="/alerts/today" component={TodaysAlerts} />
+      <Route path="/networks"><React.Suspense fallback={<p className="p-6 text-white">Loading Australian networks…</p>}><AustralianNetworks /></React.Suspense></Route>
       <Route path="/about" component={About} />
       <Route component={NotFound} />
     </Switch>

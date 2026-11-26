@@ -6,6 +6,7 @@ import preferencesHandler from "../../api/preferences/[[...slug]].js";
 import liveBusesHandler from "../../api/ptv/live-buses.js";
 import liveTrainsHandler from "../../api/ptv/live-trains.js";
 import liveTramsHandler from "../../api/ptv/live-trams.js";
+import networkHandler from "../../api/transit/network.js";
 import reportsHandler from "../../api/reports/[[...slug]].js";
 import telegramStatusHandler from "../../api/telegram/status.js";
 
@@ -107,6 +108,8 @@ function resolveHandler(event) {
   const remainder = segments.slice(2);
 
   switch (group) {
+    case "transit":
+      return remainder[0] === "network" ? { handler: networkHandler, query } : null;
     case "auth":
       return { handler: authHandler, query: { ...query, action: remainder[0] || "" } };
     case "preferences":

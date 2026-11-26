@@ -1,6 +1,7 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { createServer } from "node:http";
+import { createGzip } from "node:zlib";
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +18,7 @@ import { recordFleetSightings } from "../api/_lib/fleet-tracking.js";
 import { ensureLiveTrainsFresh } from "../api/ptv/live-trains.js";
 import liveBusesHandler from "../api/ptv/live-buses.js";
 import sydneyTransitHandler from "../api/ptv/sydney-transit.js";
+import networkHandler from "../api/transit/network.js";
 import liveTrainsHandler from "../api/ptv/live-trains.js";
 import liveTramsHandler from "../api/ptv/live-trams.js";
 import timetableHandler from "../api/ptv/timetable.js";
@@ -188,6 +190,8 @@ function getApiResolution(urlObject) {
   const query = Object.fromEntries(urlObject.searchParams.entries());
 
   switch (group) {
+    case "transit":
+      return remainder[0] === "network" ? { handler: networkHandler, query } : null;
     case "healthz":
       return { handler: healthHandler, query };
     case "feed-status":
@@ -231,7 +235,7 @@ function getStaticPath(urlObject) {
   return path.join(DIST_DIR, normalizedPath);
 }
 
-async function serveStaticFile(filePath, res) {
+async function serveStaticFile(filePath, res, req) {
   const fileStats = await stat(filePath);
   if (!fileStats.isFile()) {
     return false;
@@ -240,7 +244,7 @@ async function serveStaticFile(filePath, res) {
   const extension = path.extname(filePath).toLowerCase();
   const contentType = CONTENT_TYPES[extension] || "application/octet-stream";
   const isServiceWorker = path.basename(filePath).toLowerCase() === "sw.js";
-  const cacheControl = extension === ".html" || isServiceWorker
+  const cacheControl = extension === ".html" || isServiceWorker || extension === ".json"
     ? "no-cache, no-store, must-revalidate"
     : "public, max-age=31536000, immutable";
 
@@ -258,18 +262,23 @@ async function serveStaticFile(filePath, res) {
     return true;
   }
 
+  if (extension === ".json" && /\bgzip\b/.test(req?.headers?.["accept-encoding"] || "")) {
+    res.writeHead(200, { "Content-Type": contentType, "Cache-Control": cacheControl, "Content-Encoding": "gzip", "Vary": "Accept-Encoding" });
+    createReadStream(filePath).pipe(createGzip()).pipe(res);
+    return true;
+  }
   res.writeHead(200, { "Content-Type": contentType, "Cache-Control": cacheControl });
   createReadStream(filePath).pipe(res);
   return true;
 }
 
-async function serveSpa(urlObject, res) {
+async function serveSpa(urlObject, res, req) {
   const staticPath = getStaticPath(urlObject);
   const relativeTarget = path.relative(DIST_DIR, staticPath);
 
   if (!relativeTarget.startsWith("..") && existsSync(staticPath)) {
     try {
-      const served = await serveStaticFile(staticPath, res);
+      const served = await serveStaticFile(staticPath, res, req);
       if (served) {
         return;
       }
@@ -335,7 +344,7 @@ const server = createServer(async (req, res) => {
   }
 
   try {
-    await serveSpa(urlObject, res);
+    await serveSpa(urlObject, res, req);
   } catch (error) {
     res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Failed to serve application");

@@ -16,6 +16,17 @@ export type LiveTram = {
   operator?: string;
   /** The tram's real fleet number (e.g. "2032" for a B2 class), when the live feed publishes one. */
   fleetNumber?: string;
+  /** Per-trip number from the trip ID — tells two trams on the same route apart. */
+  tripNumber?: string;
+  /** GTFS direction_id ("0"/"1") of this trip. */
+  directionId?: string;
+  /** GTFS-realtime start time/date of this trip (HH:MM:SS / YYYYMMDD), when published. */
+  startTime?: string;
+  startDate?: string;
+  /** PTV v3 run_ref, only when this vehicle came from the v3 fallback feed. */
+  runRef?: string;
+  /** PTV v3 direction_id, only when this vehicle came from the v3 fallback feed. */
+  ptvDirectionId?: string;
 };
 
 type LiveTramResponse =
@@ -40,7 +51,7 @@ function normaliseRouteLabel(value: unknown) {
     return "Tram";
   }
 
-  const trimmed = value.trim();
+  const trimmed = value.trim().replace(/^(?:aus:vic:)?vic-/i, "").replace(/:+$/, "");
   if (!trimmed) {
     return "Tram";
   }
@@ -99,6 +110,10 @@ function normaliseLabel(value: unknown) {
   return cleaned || undefined;
 }
 
+function optionalText(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 function normaliseLiveTram(raw: Partial<LiveTram> & Record<string, unknown>, index: number): LiveTram | null {
   if (typeof raw.lat !== "number" || typeof raw.lng !== "number") {
     return null;
@@ -131,7 +146,13 @@ function normaliseLiveTram(raw: Partial<LiveTram> & Record<string, unknown>, ind
     timestamp: typeof raw.timestamp === "string" ? raw.timestamp : undefined,
     heading: typeof raw.heading === "number" ? raw.heading : undefined,
     operator: typeof raw.operator === "string" && raw.operator.trim() ? raw.operator : "Yarra Trams",
-    fleetNumber: typeof raw.fleetNumber === "string" && raw.fleetNumber.trim() ? raw.fleetNumber.trim() : undefined,
+    fleetNumber: optionalText(raw.fleetNumber),
+    tripNumber: optionalText(raw.tripNumber),
+    directionId: optionalText(raw.directionId),
+    startTime: optionalText(raw.startTime),
+    startDate: optionalText(raw.startDate),
+    runRef: optionalText(raw.runRef),
+    ptvDirectionId: optionalText(raw.ptvDirectionId),
   };
 }
 
