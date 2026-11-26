@@ -72,6 +72,7 @@ async function loadTramHeadsignIndex() {
       const headers = parseCsvLine(lines[0].replace(/^﻿/, "").replace(/\r$/, ""));
       const tripIdIndex = headers.indexOf("trip_id");
       const headsignIndex = headers.indexOf("trip_headsign");
+      const directionIndex = headers.indexOf("direction_id");
       if (tripIdIndex === -1 || headsignIndex === -1) return index;
 
       for (let i = 1; i < lines.length; i += 1) {
@@ -79,7 +80,13 @@ async function loadTramHeadsignIndex() {
         if (!rawLine) continue;
         const values = parseCsvLine(rawLine);
         const headsign = values[headsignIndex]?.trim();
-        if (headsign) index.set(normaliseScheduleTripKey(values[tripIdIndex]), headsign);
+        const directionId = directionIndex === -1 ? "" : values[directionIndex]?.trim();
+        if (headsign || directionId) {
+          index.set(normaliseScheduleTripKey(values[tripIdIndex]), {
+            headsign: headsign || undefined,
+            directionId: directionId || undefined,
+          });
+        }
       }
       return index;
     }).catch((error) => {
@@ -104,7 +111,7 @@ function normaliseRoute(routeId, fallback = "Tram") {
     return fallback;
   }
 
-  const trimmed = routeId.trim();
+  const trimmed = routeId.trim().replace(/^(?:aus:vic:)?vic-/i, "").replace(/:+$/, "");
   if (!trimmed) {
     return fallback;
   }
@@ -147,7 +154,25 @@ function normaliseDestination(...values) {
   return undefined;
 }
 
-function buildPtvLiveTrams(feed, headsignIndex) {
+// Index entries used to be a bare headsign string; accept both shapes.
+function readScheduleEntry(headsignIndex, tripId) {
+  const entry = headsignIndex?.get(normaliseScheduleTripKey(tripId));
+  if (typeof entry === "string") return { headsign: entry };
+  return entry || {};
+}
+
+function cleanString(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+// "03-86--5-T5-142606618" -> "142606618": the per-trip number, which is what
+// tells two trips on the same route apart at a glance.
+function tripNumberFromTripId(tripId) {
+  return cleanString(tripId)?.match(/-(\d{3,})$/)?.[1];
+}
+
+export function buildPtvLiveTrams(feed, headsignIndex) {
   return (feed.entity ?? [])
     .map((entity) => {
       const vehicle = entity.vehicle;
@@ -167,8 +192,10 @@ function buildPtvLiveTrams(feed, headsignIndex) {
       const fleetNumber = typeof vehicle.vehicle?.id === "string" && /^\d+$/.test(vehicle.vehicle.id.trim())
         ? vehicle.vehicle.id.trim()
         : undefined;
+      const schedule = readScheduleEntry(headsignIndex, tripId);
+      const realtimeDirection = vehicle.trip?.directionId;
       const destination = normaliseDestination(
-        headsignIndex?.get(normaliseScheduleTripKey(tripId)),
+        schedule.headsign,
         vehicle.trip?.tripHeadsign,
         vehicle.trip?.headsign,
         vehicle.trip?.tripShortName,
@@ -176,7 +203,16 @@ function buildPtvLiveTrams(feed, headsignIndex) {
 
       return {
         id: entity.id || vehicle.vehicle?.id || `${route}-${latitude}-${longitude}`,
-        tripId: typeof tripId === "string" && tripId.trim() ? tripId.trim() : undefined,
+        tripId: cleanString(tripId),
+        // The trip-level identity of this run: same route number, different
+        // trip. directionId is GTFS 0/1 (realtime first, else static trips.txt).
+        tripNumber: tripNumberFromTripId(tripId),
+        directionId:
+          typeof realtimeDirection === "number" && Object.prototype.hasOwnProperty.call(vehicle.trip, "directionId")
+            ? String(realtimeDirection)
+            : schedule.directionId,
+        startTime: cleanString(vehicle.trip?.startTime),
+        startDate: cleanString(vehicle.trip?.startDate),
         label,
         fleetNumber,
         lat: latitude,
@@ -203,7 +239,7 @@ function buildPtvLiveTrams(feed, headsignIndex) {
 // something either fallback can route around).
 let ptvV3TramCache = { loadedAt: 0, trams: [] };
 
-function buildPtvV3LiveTrams(data) {
+export function buildPtvV3LiveTrams(data) {
   return (data?.runs ?? [])
     .map((run) => {
       const position = run.vehicle_position;
@@ -219,9 +255,14 @@ function buildPtvV3LiveTrams(data) {
         ? descriptor.id.trim()
         : undefined;
 
+      const runRef = cleanString(run.run_ref) ?? cleanString(run.run_id);
       return {
-        id: run.run_id ? String(run.run_id) : `${route}-${latitude}-${longitude}`,
-        tripId: run.run_id ? String(run.run_id) : undefined,
+        id: runRef ?? `${route}-${latitude}-${longitude}`,
+        tripId: runRef,
+        // v3 identifies a service by run, not GTFS trip: keep the run ref and
+        // v3's own direction_id so departures (also v3) can be matched exactly.
+        runRef,
+        ptvDirectionId: cleanString(run.direction_id),
         label: normaliseLabel(descriptor.id, descriptor.description, route),
         fleetNumber,
         lat: latitude,
