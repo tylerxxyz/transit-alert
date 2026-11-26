@@ -78,6 +78,7 @@ import {
 } from "@/lib/preferences";
 import { fetchMetroNotifyAlerts, isAlertCurrent } from "@/lib/todays-alerts";
 import { alertMatchesJourney, journeyDisruptionGuidance } from "@/lib/journey-disruptions";
+import { formatRelativeTime } from "@/lib/relative-time";
 import { fetchStationDepartures, fetchJourneyPlan, fetchSurfaceStopDepartures, fetchBusTrip, fetchTramTrip, fetchTrainTrip } from "@/lib/timetable";
 
 const TRAIN_BOARDING_HINTS: Record<string, { zone: string; reason: string }> = {
@@ -991,6 +992,31 @@ function estimateMykiFare(route: Station[], legs: JourneyLeg[], now: Date = new 
   const today = getMelbourneDateKey(now);
   return [...MYKI_METRO_FARE_SCHEDULES].reverse().find((schedule) => schedule.from <= today) ?? null;
 }
+
+// Turns a sighting's GPS fix into something a rider can read ("near
+// Caulfield") using the real station coordinates the map already uses.
+// Beyond FLEET_NEAREST_STATION_MAX_KM the position is between stations or
+// off the network (depot, siding), so the raw coordinates are kept instead
+// of naming a station the vehicle isn't actually at.
+const FLEET_NEAREST_STATION_MAX_KM = 1.5;
+
+function describeFleetPosition(position: { lat: number; lng: number }) {
+  let nearest: { name: string; km: number } | null = null;
+  for (const station of ALL_STATIONS) {
+    const [lat, lng] = station.position;
+    const dLat = ((lat - position.lat) * Math.PI) / 180;
+    const dLng = ((lng - position.lng) * Math.PI) / 180;
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos((position.lat * Math.PI) / 180) * Math.cos((lat * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+    const km = 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    if (!nearest || km < nearest.km) nearest = { name: station.name, km };
+  }
+  if (nearest && nearest.km <= FLEET_NEAREST_STATION_MAX_KM) return `near ${nearest.name}`;
+  return `${position.lat.toFixed(5)}, ${position.lng.toFixed(5)}`;
+}
+
+const FLEET_ROSTER_COLLAPSED_LIMIT = 8;
 
 function getJourneyCorridorLabels(route: Station[]) {
   const routeNames = new Set(route.map((station) => station.name));
@@ -2015,6 +2041,8 @@ export default function Home() {
   const [isVersionFirstOpen, setIsVersionFirstOpen] = useState(false);
   const [userMenuMessage, setUserMenuMessage] = useState("");
   const [selectedFleetType, setSelectedFleetType] = useState<FleetFilterKey>("all");
+  const [showFullFleetRoster, setShowFullFleetRoster] = useState(false);
+  useEffect(() => setShowFullFleetRoster(false), [selectedFleetType]);
   const [fleetSearchQuery, setFleetSearchQuery] = useState("");
   const [pidStation, setPidStation] = useState<string>("Flinders Street");
   const [pidPlatform, setPidPlatform] = useState<string>("1");
@@ -4007,7 +4035,7 @@ export default function Home() {
                         </div>
                       </div>
                       <p className="mt-2 text-[10px] leading-4 text-white/40">
-                        *Fare estimate only ({journeyFareEstimate?.label}). V/Line regional trips use separate distance-based fares — confirm exact pricing at ptv.vic.gov.au.
+                        {journeyFareEstimate?.label}. V/Line regional fares are priced separately.
                       </p>
                     </div>
                   )}
@@ -4468,7 +4496,7 @@ export default function Home() {
 
                   {fleetTripsToDisplay.length > 0 ? (
                     <div className="overflow-hidden rounded-[1.35rem] border border-cyan-300/10 bg-black/30">
-                      <div className="grid grid-cols-[92px_minmax(150px,1.1fr)_minmax(130px,0.9fr)_120px_110px_96px_112px] gap-3 border-b border-cyan-300/10 bg-cyan-950/20 px-4 py-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-200/70 max-lg:hidden">
+                      <div className="grid grid-cols-[92px_minmax(150px,1.1fr)_minmax(130px,0.9fr)_120px_110px_96px_140px] gap-3 border-b border-cyan-300/10 bg-cyan-950/20 px-4 py-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-200/70 max-lg:hidden">
                         <span>Fleet</span>
                         <span>Service</span>
                         <span>Destination</span>
@@ -4477,11 +4505,11 @@ export default function Home() {
                         <span>Status</span>
                         <span>Last Seen</span>
                       </div>
-                      <div className="max-h-[38vh] divide-y divide-white/5 overflow-y-auto">
+                      <div className="max-h-[60vh] divide-y divide-white/5 overflow-y-auto">
                         {fleetTripsToDisplay.map((trip) => (
                           <article
                             key={`${trip.fleet}-${trip.tdn}-${trip.id}`}
-                            className="grid gap-3 px-4 py-3 text-sm text-white/80 transition hover:bg-cyan-400/[0.04] lg:grid-cols-[92px_minmax(150px,1.1fr)_minmax(130px,0.9fr)_120px_110px_96px_112px] lg:items-center"
+                            className="grid gap-3 px-4 py-3 text-sm text-white/80 transition hover:bg-cyan-400/[0.04] lg:grid-cols-[92px_minmax(150px,1.1fr)_minmax(130px,0.9fr)_120px_110px_96px_140px] lg:items-center"
                           >
                             <div className="flex flex-col gap-0.5">
                               {/* Trams: the operator ("Operated by Yarra Trams" / a Sydney light
@@ -4519,7 +4547,7 @@ export default function Home() {
                               <button
                                 type="button"
                                 onClick={() => openLiveTrainOnMap(trip)}
-                                className="rounded-lg border border-cyan-300/20 bg-cyan-400/10 px-2.5 py-1 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-400/15"
+                                className="shrink-0 rounded-lg border border-cyan-300/20 bg-cyan-400/10 px-2.5 py-1 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-400/15"
                               >
                                 Track
                               </button>
@@ -4529,7 +4557,7 @@ export default function Home() {
                       </div>
 
                       <p className="border-t border-cyan-300/10 px-4 py-3 text-sm text-white/55">
-                        Showing {fleetTripsToDisplay.length} live rows for {selectedFleetFilterLabel}. Counts are calculated from the current live feed after fleet classification.
+                        Showing {fleetTripsToDisplay.length} live {fleetTripsToDisplay.length === 1 ? "service" : "services"} for {selectedFleetFilterLabel}.
                       </p>
                     </div>
                   ) : shouldLookupFleetHistory && fleetHistoryQuery.data && fleetHistoryQuery.data.status !== "idle" ? (
@@ -4541,15 +4569,21 @@ export default function Home() {
                         {fleetHistoryQuery.data.consist}
                         <span className="ml-2 text-sm font-normal text-white/50">
                           last seen{" "}
-                          {fleetHistoryQuery.data.last_seen_at
-                            ? new Date(fleetHistoryQuery.data.last_seen_at).toLocaleString("en-AU")
-                            : "unknown"}
+                          {fleetHistoryQuery.data.last_seen_at ? (
+                            <time
+                              dateTime={fleetHistoryQuery.data.last_seen_at}
+                              title={new Date(fleetHistoryQuery.data.last_seen_at).toLocaleString("en-AU")}
+                            >
+                              {formatRelativeTime(fleetHistoryQuery.data.last_seen_at, "at an unknown time")}
+                            </time>
+                          ) : (
+                            "at an unknown time"
+                          )}
                         </span>
                       </p>
                       {fleetHistoryQuery.data.last_known_position && (
                         <p className="mt-1 text-sm text-white/65">
-                          Last known position: {fleetHistoryQuery.data.last_known_position.lat.toFixed(5)},{" "}
-                          {fleetHistoryQuery.data.last_known_position.lng.toFixed(5)}
+                          Last known position: {describeFleetPosition(fleetHistoryQuery.data.last_known_position)}
                         </p>
                       )}
                       {fleetHistoryQuery.data.last_service && (
@@ -4617,7 +4651,12 @@ export default function Home() {
                         Full {selectedFleetFilterLabel} roster ({fleetTypeHistoryQuery.data.sets.filter((s) => s.inService).length} in service,{" "}
                         {fleetTypeHistoryQuery.data.sets.filter((s) => !s.inService).length} not in service)
                       </p>
-                      {fleetTypeHistoryQuery.data.sets.map((set) => (
+                      {(showFullFleetRoster
+                        ? fleetTypeHistoryQuery.data.sets
+                        : fleetTypeHistoryQuery.data.sets.filter(
+                            (set, index) => set.inService || index < FLEET_ROSTER_COLLAPSED_LIMIT,
+                          )
+                      ).map((set) => (
                         <div
                           key={set.setNumber}
                           className={`rounded-[1.4rem] border p-4 ${set.inService ? "border-emerald-300/25 bg-emerald-500/[0.04]" : "border-amber-300/20 bg-amber-500/[0.04]"}`}
@@ -4630,13 +4669,15 @@ export default function Home() {
                               {set.inService ? "In service" : "Not in service"}
                             </span>
                             <span className="ml-2 text-sm font-normal text-white/50">
-                              last seen {new Date(set.lastSeenAt).toLocaleString("en-AU")}
+                              last seen{" "}
+                              <time dateTime={set.lastSeenAt} title={new Date(set.lastSeenAt).toLocaleString("en-AU")}>
+                                {formatRelativeTime(set.lastSeenAt, "at an unknown time")}
+                              </time>
                             </span>
                           </p>
                           {set.lastKnownPosition && (
                             <p className="mt-1 text-sm text-white/65">
-                              {set.inService ? "Current position" : "Last known position"}: {set.lastKnownPosition.lat.toFixed(5)},{" "}
-                              {set.lastKnownPosition.lng.toFixed(5)}
+                              {set.inService ? "Current position" : "Last known position"}: {describeFleetPosition(set.lastKnownPosition)}
                             </p>
                           )}
                           <p className="mt-1 text-sm text-white/65">
@@ -4649,6 +4690,22 @@ export default function Home() {
                           </p>
                         </div>
                       ))}
+                      {(() => {
+                        const shownCount = fleetTypeHistoryQuery.data.sets.filter(
+                          (set, index) => set.inService || index < FLEET_ROSTER_COLLAPSED_LIMIT,
+                        ).length;
+                        const hiddenCount = fleetTypeHistoryQuery.data.sets.length - shownCount;
+                        if (hiddenCount <= 0) return null;
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => setShowFullFleetRoster((current) => !current)}
+                            className="w-full rounded-[1.2rem] border border-white/10 bg-black/20 px-4 py-3 text-sm font-semibold text-white/75 transition hover:bg-white/[0.06]"
+                          >
+                            {showFullFleetRoster ? "Show fewer sets" : `Show ${hiddenCount} more not-in-service set${hiddenCount === 1 ? "" : "s"}`}
+                          </button>
+                        );
+                      })()}
                     </div>
                   )}
                   {shouldLookupFleetTypeHistory && fleetTypeHistoryQuery.data && fleetTypeHistoryQuery.data.sets.length === 0 && fleetTripsToDisplay.length === 0 && (
