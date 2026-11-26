@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   directionAgreement,
+  isHeadingAwayFromStop,
   isSameTrip,
   matchDeparturesToLiveVehicles,
   normaliseTripKey,
@@ -130,4 +131,29 @@ test("an exactly-matched tram is not also handed to a later departure as a guess
   );
   assert.equal(exact?.vehicle, only);
   assert.equal(guess, null);
+});
+
+test("a tram that has already passed the stop is not guessed for the next departure", () => {
+  // Both trams sit ~220 m north of the stop on the same route and direction.
+  // The nearer one is heading north (away from the stop); the other is
+  // heading south toward it.
+  const departed = tram("1", { destination: "Docklands", heading: 0 });
+  const approaching = tram("2", { destination: "Docklands", heading: 180, lat: STOP[0] + 0.003 });
+  const [match] = matchDeparturesToLiveVehicles(
+    [{ route: "86", destination: "Docklands", expectedAt: inMinutes(5) }],
+    [departed, approaching],
+    STOP,
+    { now: NOW },
+  );
+  assert.equal(match?.vehicle, approaching);
+  assert.equal(match?.confidence, "estimated");
+});
+
+test("missing or at-stop headings never rule a tram out", () => {
+  assert.equal(isHeadingAwayFromStop(tram("1"), STOP), false);
+  assert.equal(isHeadingAwayFromStop(tram("1", { heading: Number.NaN }), STOP), false);
+  // ~45 m from the stop: effectively at it, whatever the heading says.
+  assert.equal(isHeadingAwayFromStop(tram("1", { lat: STOP[0] + 0.0004, heading: 0 }), STOP), false);
+  assert.equal(isHeadingAwayFromStop(tram("1", { heading: 0 }), STOP), true);
+  assert.equal(isHeadingAwayFromStop(tram("1", { heading: 180 }), STOP), false);
 });

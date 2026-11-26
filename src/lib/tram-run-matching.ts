@@ -22,6 +22,8 @@ export type SurfaceVehicleIdentity = {
   ptvDirectionId?: string;
   lat: number;
   lng: number;
+  /** Compass bearing in degrees (0 = north), when the feed publishes one. */
+  heading?: number;
 };
 
 export type SurfaceDepartureIdentity = {
@@ -91,6 +93,38 @@ function distanceInMetres(from: [number, number], to: [number, number]) {
   return 6_371_000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+function bearingInDegrees(from: [number, number], to: [number, number]) {
+  const toRadians = (degrees: number) => (degrees * Math.PI) / 180;
+  const lat1 = toRadians(from[0]);
+  const lat2 = toRadians(to[0]);
+  const dLng = toRadians(to[1] - from[1]);
+  const y = Math.sin(dLng) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+}
+
+// Within this distance the vehicle is effectively at the stop, where a
+// bearing toward the stop is meaningless.
+const AT_STOP_METRES = 80;
+// A heading this far from the bearing toward the stop means the vehicle is
+// moving away from it.
+const MOVING_AWAY_DEGREES = 100;
+
+/**
+ * True only when the vehicle's own published heading shows it travelling away
+ * from the stop, i.e. it has already passed it on this trip. Missing or
+ * invalid headings never rule a vehicle out.
+ */
+export function isHeadingAwayFromStop(vehicle: SurfaceVehicleIdentity, stopPosition: [number, number]): boolean {
+  const heading = vehicle.heading;
+  if (typeof heading !== "number" || !Number.isFinite(heading) || heading < 0 || heading > 360) return false;
+  const position: [number, number] = [vehicle.lat, vehicle.lng];
+  if (distanceInMetres(position, stopPosition) <= AT_STOP_METRES) return false;
+  const toStop = bearingInDegrees(position, stopPosition);
+  const difference = Math.abs(((heading - toStop) % 360 + 540) % 360 - 180);
+  return difference > MOVING_AWAY_DEGREES;
+}
+
 function normaliseStopName(value: unknown) {
   return clean(value)
     .toLowerCase()
@@ -155,7 +189,8 @@ export type MatchDeparturesOptions = {
  * Exact identities (fleet number, run, trip) win. Remaining departures, in
  * departure-time order, may each claim the nearest still-unclaimed vehicle on
  * the same route heading the same way — so two upcoming 86s get two
- * different trams, and a tram heading the other way is never offered.
+ * different trams, and a tram heading the other way, or one that has
+ * already passed the stop, is never offered.
  */
 export function matchDeparturesToLiveVehicles<V extends SurfaceVehicleIdentity>(
   departures: SurfaceDepartureIdentity[],
@@ -195,6 +230,9 @@ export function matchDeparturesToLiveVehicles<V extends SurfaceVehicleIdentity>(
       if (claimed.has(vehicle)) continue;
       if (!route || canonical(vehicle.route) !== route) continue;
       if (directionAgreement(departure, vehicle) !== "same") continue;
+      // Same route and direction, but already past this stop: it can't be
+      // the tram for an upcoming departure here.
+      if (isHeadingAwayFromStop(vehicle, stopPosition)) continue;
       const distance = distanceInMetres([vehicle.lat, vehicle.lng], stopPosition);
       if (distance > maxDistanceMetres) continue;
       if (!best || distance < best.distance) best = { vehicle, distance };
